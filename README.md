@@ -124,7 +124,7 @@ The extension needs an OpenAI API key to work. This is what lets it talk to GPT.
 
 That's it. If you want the extension to wait before answering (so it doesn't look suspicious), drag the **Answer Delay** slider in the popup to add a few seconds of wait time.
 
-## ⚙️ Settings
+##  Settings
 
 | Setting | Default | What it does |
 |---|---|---|
