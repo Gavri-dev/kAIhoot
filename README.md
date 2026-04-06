@@ -4,7 +4,7 @@
 
 <div align="center">
 
-# 🤖 kAIhoot
+#  kAIhoot
 
 ### AI-Powered Kahoot Bot Auto-Answer Chrome Extension
 
@@ -25,12 +25,12 @@
 
 | | |
 |---|---|
-| [⚡ What Makes This Different](#-what-makes-this-different) | [🏗️ How It Works](#️-how-it-works) |
-| [🧠 Supported Question Types](#-supported-question-types) | [🔒 Privacy](#-privacy) |
-| [🛠️ Installation](#️-installation) | [💰 API Cost](#-api-cost) |
-| [⚙️ Settings](#️-settings) | [🔧 Troubleshooting](#-troubleshooting) |
+| [ What Makes This Different](#-what-makes-this-different) | [ How It Works](#️-how-it-works) |
+| [ Supported Question Types](#-supported-question-types) | [ Privacy](#-privacy) |
+| [ Installation](#️-installation) | [ API Cost](#-api-cost) |
+| [ Settings](#️-settings) | [ Troubleshooting](#-troubleshooting) |
 
-## ⚡ What Makes This Different
+##  What Makes This Different
 
 Most Kahoot tools only handle basic multiple-choice. Some need the Quiz ID beforehand. Others are paywalled or use a shared server that gets rate-limited.
 
@@ -54,21 +54,21 @@ kAIhoot works on **every** question type Kahoot offers, answers in real-time dur
 | Silent mode | ✅ | ✅ | ❌ |
 | Free & open source | ✅ | ❌ | ❌ |
 
-## 🧠 Supported Question Types
+##  Supported Question Types
 
-**📝 Multiple Choice & True/False** - Reads the question and all choices from the WebSocket, sends to GPT, highlights and clicks the correct answer. Handles image-based choices by reading `aria-label` attributes.
+** Multiple Choice & True/False** - Reads the question and all choices from the WebSocket, sends to GPT, highlights and clicks the correct answer. Handles image-based choices by reading `aria-label` attributes.
 
-**☑️ Multi-Select** - Evaluates each option independently with a YES/NO per-option prompt. Filters out fabricated or nonsensical choices and selects all correct answers (typically 2-4 out of the options).
+** Multi-Select** - Evaluates each option independently with a YES/NO per-option prompt. Filters out fabricated or nonsensical choices and selects all correct answers (typically 2-4 out of the options).
 
-**📍 Pin-It (Map & Image Questions)** - Sends the image to GPT-4.1 Vision with a coordinate system and landmark reference points for world maps. Places the pin on the correct location via SVG coordinate injection. No other Kahoot tool does this.
+** Pin-It (Map & Image Questions)** - Sends the image to GPT-4.1 Vision with a coordinate system and landmark reference points for world maps. Places the pin on the correct location via SVG coordinate injection. No other Kahoot tool does this.
 
-**🧩 Jumble (Reorder)** - Reads shuffled tiles, asks GPT for the correct order, computes the tile permutation, then reorders through React fiber tree manipulation and drag-click simulation.
+** Jumble (Reorder)** - Reads shuffled tiles, asks GPT for the correct order, computes the tile permutation, then reorders through React fiber tree manipulation and drag-click simulation.
 
-**🎚️ Slider (Numeric)** - Asks GPT the factual question, snaps the answer to the nearest valid step value using offset math (`min + round((value - min) / step) * step`), sends the WS answer during the loading animation, then sets the visual slider and clicks submit.
+** Slider (Numeric)** - Asks GPT the factual question, snaps the answer to the nearest valid step value using offset math (`min + round((value - min) / step) * step`), sends the WS answer during the loading animation, then sets the visual slider and clicks submit.
 
-**✏️ Open-Ended (Type Answer)** - Generates a short answer within the character limit, types it character-by-character with simulated keyboard events (keydown → InputEvent → keyup) to work with React controlled inputs, then submits.
+** Open-Ended (Type Answer)** - Generates a short answer within the character limit, types it character-by-character with simulated keyboard events (keydown → InputEvent → keyup) to work with React controlled inputs, then submits.
 
-## 🛠️ Installation
+##  Installation
 
 ### Step 1: Download the extension
 
@@ -108,7 +108,7 @@ The extension needs an OpenAI API key to work. This is what lets it talk to GPT.
 
 ### Step 4: Configure the extension
 
-1. Click the puzzle piece icon (🧩) in Chrome's top-right toolbar to see your extensions
+1. Click the puzzle piece icon in Chrome's top-right toolbar to see your extensions
 2. Click on **kAIhoot** to open the popup
 3. Click **"OpenAI Settings"** to expand the settings panel
 4. Paste your API key into the **"API Key"** field
@@ -134,7 +134,7 @@ That's it. If you want the extension to wait before answering (so it doesn't loo
 | Silent Mode | ❌ Off | Hides all on-screen indicators (status badge, timer, highlights) |
 | Model | `gpt-5-mini` | Any OpenAI model. `gpt-5-mini` is fast and cheap. `gpt-5` is smarter but slower |
 
-## 🏗️ How It Works
+##  How It Works
 
 When you join a Kahoot game, the extension intercepts the WebSocket connection between your browser and Kahoot's servers. Every time a new question gets sent to your client, kAIhoot grabs it before the UI even renders, sends it to OpenAI, and uses the response to answer automatically.
 
@@ -169,15 +169,15 @@ When you join a Kahoot game, the extension intercepts the WebSocket connection b
 
 Questions get sent to AI the instant they arrive via WebSocket, during the loading animation. Slider and jumble answers are submitted via WS before the UI is even interactive. Pin placement polls the SVG at 100ms intervals instead of waiting for buffers.
 
-## 🔒 Privacy
+##  Privacy
 
 Your API key is stored locally in `chrome.storage.sync` and only ever sent to OpenAI. There's no backend, no analytics, no telemetry, no data collection. The extension only requests permissions for `storage`, `kahoot.it`, and `api.openai.com`.
 
-## 💰 API Cost
+##  API Cost
 
 A typical 20-question game on `gpt-5-mini` costs about $0.01-0.03. Pin-it questions are a bit more (~$0.02 each) because they use `gpt-4.1` for vision. $5 of OpenAI credit will last you a very long time.
 
-## 🔧 Troubleshooting
+##  Troubleshooting
 
 **Extension doesn't activate / no status badge appears**
 - Make sure you're on `kahoot.it` (not `kahoot.com` or `create.kahoot.com`)
@@ -199,11 +199,11 @@ A typical 20-question game on `gpt-5-mini` costs about $0.01-0.03. Pin-it questi
 **"manifest.json" error when loading**
 - You probably selected the wrong folder. Make sure you pick the folder that has `manifest.json` directly inside it, not a parent folder or a subfolder
 
-## 🧪 Tested With
+##  Tested With
 
 Standard quiz (4-choice), true/false, multi-select (2-4 correct), pin-it with world maps and custom images, jumble (3-8 tiles), slider with numeric ranges, open-ended with character limits, and image-based answer choices. Also works with mixed-type quizzes. Surveys and polls are auto-skipped since they're non-scored.
 
-## 🤝 Credits
+##  Credits
 
 Built by [@Gavri-dev](https://github.com/Gavri-dev). Originally based on [QuizGPT](https://github.com/im23b-busere/QuizGPT) by [@im23b-busere](https://github.com/im23b-busere) (MIT License). Extended with full question type coverage, vision AI, React DOM manipulation, WS-first submission, and a lot of speed/robustness work.
 
@@ -211,7 +211,7 @@ Built by [@Gavri-dev](https://github.com/Gavri-dev). Originally based on [QuizGP
 
 Educational and research purposes only. Demonstrates how browser extensions can interact with web applications through WebSocket interception and DOM manipulation. Not affiliated with Kahoot! or OpenAI. Use responsibly.
 
-## 📄 License
+##  License
 
 [MIT](LICENSE) - do whatever you want, just keep the copyright notice.
 
