@@ -1,24 +1,64 @@
-// kAIhoot — Popup script
+// kAIhoot popup
 
-const versionLabel  = document.getElementById('versionLabel');
-const apiStatusEl   = document.getElementById('apiStatus');
-const liveSection   = document.getElementById('liveSection');
-const liveQuestion  = document.getElementById('liveQuestion');
-const liveAnswer    = document.getElementById('liveAnswer');
-const highlightCb   = document.getElementById('highlight');
-const autoclickCb   = document.getElementById('autoclick');
-const silentModeCb  = document.getElementById('silentMode');
-const delaySlider   = document.getElementById('answerDelay');
-const delayDisplay  = document.getElementById('delayValue');
-const toggleOpenAI  = document.getElementById('toggleOpenAI');
-const openaiSection = document.getElementById('openaiSection');
-const collapseArrow = document.getElementById('collapseArrow');
-const apiKeyInput   = document.getElementById('openaiApiKey');
-const modelInput    = document.getElementById('openaiModel');
-const saveBtn       = document.getElementById('saveOpenAI');
-const clearBtn      = document.getElementById('clearOpenAI');
+import { migrateApiKeyToLocal } from './core/storage.js';
+import { DEFAULT_MODEL, DEFAULT_VISION_MODEL, DEPRECATED_MODELS } from './core/constants.js';
 
-// ─── Live tracking ──────────────────────────────────────────────────
+const versionLabel    = document.getElementById('versionLabel');
+const apiStatus       = document.getElementById('apiStatus');
+const liveSection     = document.getElementById('liveSection');
+const questionText    = document.getElementById('questionText');
+const answerText      = document.getElementById('answerText');
+const highlightCb     = document.getElementById('highlight');
+const autoclickCb     = document.getElementById('autoclick');
+const pinHighlightCb  = document.getElementById('pinHighlight');
+const pinAutoclickCb  = document.getElementById('pinAutoclick');
+const silentCb        = document.getElementById('silent');
+const delaySlider     = document.getElementById('answerDelay');
+const delayValue      = document.getElementById('delayValue');
+const toggleOpenAI    = document.getElementById('toggleOpenAI');
+const openaiSection   = document.getElementById('openaiSection');
+const collapseArrow   = document.getElementById('collapseArrow');
+const apiKeyInput     = document.getElementById('openaiApiKey');
+const modelSelect     = document.getElementById('openaiModel');
+const visionSelect    = document.getElementById('openaiVisionModel');
+const saveBtn         = document.getElementById('saveApi');
+const clearBtn        = document.getElementById('clearApi');
+
+
+const TYPE_LABELS = {
+  quiz: 'MCQ', true_false: 'T/F', multiple_select_quiz: 'Multi',
+  pin_it: 'Pin', jumble: 'Jumble', slider: 'Slider', open_ended: 'Open'
+};
+
+// --- Live tracking ---
+
+function showQuestion(title, type) {
+  if (!title) return;
+  liveSection?.classList.remove('hidden');
+  const badge = type && TYPE_LABELS[type] ? `[${TYPE_LABELS[type]}] ` : '';
+  if (questionText) {
+    questionText.textContent = badge + title;
+    questionText.classList.add('active');
+  }
+}
+
+function showAnswer(answer) {
+  if (!answer) return;
+  liveSection?.classList.remove('hidden');
+  if (answerText) {
+    answerText.textContent = answer;
+    answerText.classList.remove('thinking');
+    answerText.classList.add('active');
+  }
+}
+
+function setThinking() {
+  if (answerText) {
+    answerText.textContent = 'Thinking...';
+    answerText.classList.add('thinking');
+    answerText.classList.remove('active');
+  }
+}
 
 async function pollCurrentQuestion() {
   try {
@@ -26,74 +66,86 @@ async function pollCurrentQuestion() {
     if (!tab?.id) return;
     const resp = await chrome.tabs.sendMessage(tab.id, { action: 'getQuestion' });
     if (resp?.question) {
-      showQuestion(resp.question.title);
+      showQuestion(resp.question.title, resp.question.type);
       if (resp.answer) showAnswer(resp.answer);
     }
-  } catch (err) {
-    // Expected when no Kahoot tab is active; only log unexpected errors
-    if (!err?.message?.includes('Could not establish connection')) {
-      console.debug('[kAIhoot Popup]', err.message);
-    }
-  }
-}
-
-function showQuestion(title) {
-  if (!title) return;
-  liveSection.classList.remove('hidden');
-  liveQuestion.textContent = title;
-}
-
-function showAnswer(answer) {
-  if (!answer) return;
-  liveSection.classList.remove('hidden');
-  liveAnswer.textContent = answer;
+  } catch (_) {}
 }
 
 chrome.runtime.onMessage.addListener((request) => {
   if (request.action === 'updateQuestion' && request.question) {
-    showQuestion(request.question.title);
-    liveAnswer.textContent = '...';
+    showQuestion(request.question.title, request.question.type);
+    setThinking();
   }
   if (request.action === 'updateAnswer' && request.answer) {
     showAnswer(request.answer);
   }
 });
 
-// ─── Settings ───────────────────────────────────────────────────────
+// --- Status ---
 
-const DEPRECATED_MODELS = new Set([
-  'gpt-4o-mini', 'gpt-4o', 'gpt-3.5-turbo', 'gpt-4-turbo',
-  'gpt-4', 'gpt-4-1106-preview', 'gpt-4-0125-preview'
-]);
-const DEFAULT_MODEL = 'gpt-5-mini';
+function updateApiStatus(hasKey) {
+  if (!apiStatus) return;
+  apiStatus.textContent = hasKey ? 'Connected' : 'No key';
+  apiStatus.className = `api-pill ${hasKey ? 'ok' : 'missing'}`;
+}
+
+function updateDelayLabel(value) {
+  if (delayValue) delayValue.textContent = value > 0 ? `${value}s` : 'Off';
+}
+
+// --- Settings ---
 
 async function loadSettings() {
-  const s = await chrome.storage.sync.get(['highlightOption', 'autoClickOption', 'silentMode', 'answerDelay', 'openaiApiKey', 'openaiModel']);
-  if (highlightCb)  highlightCb.checked = s.highlightOption !== false;
-  if (autoclickCb)  autoclickCb.checked = s.autoClickOption !== false;
-  if (silentModeCb) silentModeCb.checked = !!s.silentMode;
-  const delay = s.answerDelay ?? 0;
-  if (delaySlider)  delaySlider.value = String(delay);
-  if (delayDisplay) delayDisplay.textContent = String(delay);
-  if (apiKeyInput) apiKeyInput.value = s.openaiApiKey || '';
-  // Auto-upgrade deprecated models
-  let model = s.openaiModel || DEFAULT_MODEL;
-  if (DEPRECATED_MODELS.has(model.trim().toLowerCase())) {
-    model = DEFAULT_MODEL;
-    await chrome.storage.sync.set({ openaiModel: model });
-  }
-  if (modelInput) modelInput.value = model;
-  updateApiStatus(!!(s.openaiApiKey?.trim()));
+  const settings = await chrome.storage.sync.get([
+    'highlightOption', 'autoClickOption', 'pinHighlightOption', 'pinAutoClickOption',
+    'silentMode', 'answerDelay', 'openaiModel', 'openaiVisionModel'
+  ]);
+  const migratedKey = await migrateApiKeyToLocal();
+
+  if (highlightCb) highlightCb.checked = settings.highlightOption !== false;
+  if (autoclickCb) autoclickCb.checked = settings.autoClickOption !== false;
+  if (pinHighlightCb) pinHighlightCb.checked = settings.pinHighlightOption !== false;
+  if (pinAutoclickCb) pinAutoclickCb.checked = !!settings.pinAutoClickOption;
+  if (silentCb) silentCb.checked = !!settings.silentMode;
+
+  const delay = settings.answerDelay ?? 0;
+  if (delaySlider) delaySlider.value = delay;
+  updateDelayLabel(delay);
+
+  if (apiKeyInput) apiKeyInput.value = migratedKey || '';
+
+  // Set model dropdowns, migrating deprecated models to defaults
+  let model = (settings.openaiModel || DEFAULT_MODEL).trim();
+  if (DEPRECATED_MODELS.has(model.toLowerCase())) model = DEFAULT_MODEL;
+  setSelectValue(modelSelect, model, DEFAULT_MODEL);
+
+  let visionModel = (settings.openaiVisionModel || DEFAULT_VISION_MODEL).trim();
+  if (DEPRECATED_MODELS.has(visionModel.toLowerCase())) visionModel = DEFAULT_VISION_MODEL;
+  setSelectValue(visionSelect, visionModel, DEFAULT_VISION_MODEL);
+
+  updateApiStatus(!!migratedKey);
+  return !!migratedKey;
+}
+
+// Pick the matching option, or fall back to the default
+function setSelectValue(select, value, fallback) {
+  if (!select) return;
+  const options = [...select.options].map(o => o.value);
+  select.value = options.includes(value) ? value : fallback;
 }
 
 function wireSettings() {
   highlightCb?.addEventListener('change', () => chrome.storage.sync.set({ highlightOption: highlightCb.checked }));
   autoclickCb?.addEventListener('change', () => chrome.storage.sync.set({ autoClickOption: autoclickCb.checked }));
-  silentModeCb?.addEventListener('change', () => chrome.storage.sync.set({ silentMode: silentModeCb.checked }));
+  pinHighlightCb?.addEventListener('change', () => chrome.storage.sync.set({ pinHighlightOption: pinHighlightCb.checked }));
+  pinAutoclickCb?.addEventListener('change', () => chrome.storage.sync.set({ pinAutoClickOption: pinAutoclickCb.checked }));
+  silentCb?.addEventListener('change', () => chrome.storage.sync.set({ silentMode: silentCb.checked }));
+
   let delayDebounce = null;
   delaySlider?.addEventListener('input', () => {
     const v = parseFloat(delaySlider.value);
-    if (delayDisplay) delayDisplay.textContent = String(v);
+    updateDelayLabel(v);
     clearTimeout(delayDebounce);
     delayDebounce = setTimeout(() => chrome.storage.sync.set({ answerDelay: v }), 250);
   });
@@ -105,38 +157,40 @@ function wireSettings() {
 
   saveBtn?.addEventListener('click', async () => {
     const key = apiKeyInput?.value.trim() || '';
-    const model = modelInput?.value.trim() || 'gpt-5-mini';
-    await chrome.storage.sync.set({ openaiApiKey: key, openaiModel: model });
+    const model = modelSelect?.value || DEFAULT_MODEL;
+    const visionModel = visionSelect?.value || DEFAULT_VISION_MODEL;
+    await chrome.storage.local.set({ openaiApiKey: key });
+    await chrome.storage.sync.set({ openaiModel: model, openaiVisionModel: visionModel });
+    await chrome.storage.sync.remove(['openaiApiKey']);
     updateApiStatus(!!key);
-    if (!key) { openaiSection.classList.remove('hidden'); collapseArrow.textContent = '▾'; }
-    else { openaiSection.classList.add('hidden'); collapseArrow.textContent = '▸'; }
+    // Flash the save button as confirmation
+    if (saveBtn) {
+      const orig = saveBtn.textContent;
+      saveBtn.textContent = 'Saved!';
+      saveBtn.classList.add('saved');
+      setTimeout(() => { saveBtn.textContent = orig; saveBtn.classList.remove('saved'); }, 1200);
+    }
+    if (key) { openaiSection?.classList.add('hidden'); collapseArrow.textContent = '▸'; }
   });
 
   clearBtn?.addEventListener('click', async () => {
-    await chrome.storage.sync.remove(['openaiApiKey', 'openaiModel']);
+    await chrome.storage.local.remove(['openaiApiKey']);
+    await chrome.storage.sync.remove(['openaiApiKey', 'openaiModel', 'openaiVisionModel']);
     if (apiKeyInput) apiKeyInput.value = '';
-    if (modelInput) modelInput.value = 'gpt-5-mini';
+    setSelectValue(modelSelect, DEFAULT_MODEL, DEFAULT_MODEL);
+    setSelectValue(visionSelect, DEFAULT_VISION_MODEL, DEFAULT_VISION_MODEL);
     updateApiStatus(false);
   });
 }
 
-function updateApiStatus(hasKey) {
-  if (!apiStatusEl) return;
-  apiStatusEl.textContent = hasKey ? 'API key set' : 'No API key';
-  apiStatusEl.classList.toggle('ok', hasKey);
-  apiStatusEl.classList.toggle('warn', !hasKey);
-}
-
-// ─── Init ───────────────────────────────────────────────────────────
+// --- Init ---
 
 (async function init() {
-  // Read version from manifest (single source of truth)
   if (versionLabel) versionLabel.textContent = `v${chrome.runtime.getManifest().version}`;
-  await loadSettings();
+  const hasKey = await loadSettings();
   wireSettings();
   pollCurrentQuestion();
-  const { openaiApiKey } = await chrome.storage.sync.get(['openaiApiKey']);
-  if (!openaiApiKey?.trim()) {
+  if (!hasKey) {
     openaiSection?.classList.remove('hidden');
     if (collapseArrow) collapseArrow.textContent = '▾';
   }

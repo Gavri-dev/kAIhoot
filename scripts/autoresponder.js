@@ -1,60 +1,81 @@
-// kAIhoot — Service worker
-import { answerQuestion, answerMultiSelect, answerPinQuestion, answerJumbleQuestion, answerSliderQuestion, answerOpenEndedQuestion } from './openai.js';
+// kAIhoot service worker. Receives questions from content.js, calls OpenAI,
+// and sends the answer back.
 
-const TAG = '[SW]';
-const DEFAULT_MODEL = 'gpt-5-mini';
+import { DEFAULT_MODEL, DEFAULT_VISION_MODEL, DEPRECATED_MODELS } from './core/constants.js';
+import { shortText } from './core/text.js';
+import { getApiKey } from './core/storage.js';
+import { answerJumbleQuestion, answerMultiSelect, answerOpenEndedQuestion, answerPinQuestion, answerQuestion, answerSliderQuestion } from './openai.js';
 
-// ─── One-time migration: upgrade deprecated model strings ───────────
-const DEPRECATED_MODELS = new Set([
-  'gpt-4o-mini', 'gpt-4o', 'gpt-3.5-turbo', 'gpt-4-turbo',
-  'gpt-4', 'gpt-4-1106-preview', 'gpt-4-0125-preview'
-]);
+const TAG = '[kAIhoot]';
+const STYLE = 'color:#10b981;font-weight:bold';
+const log = (...args) => console.log(`%c${TAG}`, STYLE, ...args);
+const err = (...args) => console.error(`%c${TAG}`, STYLE, ...args);
 
-(async function migrateModel() {
+// Clean up old model names once at startup so the popup and the worker agree.
+(async () => {
   try {
-    const { openaiModel } = await chrome.storage.sync.get(['openaiModel']);
+    const { openaiModel, openaiVisionModel } = await chrome.storage.sync.get(['openaiModel', 'openaiVisionModel']);
     const current = (openaiModel || '').trim().toLowerCase();
-    if (!current || DEPRECATED_MODELS.has(current)) {
-      await chrome.storage.sync.set({ openaiModel: DEFAULT_MODEL });
-      console.log(`${TAG} Migrated model "${current || '(empty)'}" → ${DEFAULT_MODEL}`);
+    const currentVision = (openaiVisionModel || '').trim().toLowerCase();
+    const next = {};
+    if (!current || DEPRECATED_MODELS.has(current)) next.openaiModel = DEFAULT_MODEL;
+    if (!currentVision || DEPRECATED_MODELS.has(currentVision)) next.openaiVisionModel = DEFAULT_VISION_MODEL;
+    if (Object.keys(next).length) {
+      await chrome.storage.sync.set(next);
+      log(`Migrated model settings`, next);
     }
-  } catch (_) {}
+  } catch (error) {
+    err('Model migration failed:', error);
+  }
 })();
 
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === 'processQuestion') {
-    sendResponse({ received: true });
-    const tabId = sender?.tab?.id;
-    if (tabId) processQuestion(request.question, tabId);
-  }
-  if (request.action === 'checkStatus') {
-    sendResponse({ status: 'running', timestamp: new Date().toISOString() });
-  }
-  return true;
-});
-
-chrome.commands?.onCommand?.addListener(async (command) => {
+chrome.commands.onCommand.addListener((command) => {
   if (command !== 'manual-answer') return;
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) return;
-    const resp = await chrome.tabs.sendMessage(tab.id, { action: 'getQuestion' }).catch(() => null);
-    if (resp?.question) await processQuestion(resp.question, tab.id);
-  } catch (err) { console.error(`${TAG} Shortcut error:`, err); }
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs[0]?.id) chrome.tabs.sendMessage(tabs[0].id, { action: 'manualAnswer' }).catch(() => {});
+  });
 });
 
-async function processQuestion(question, tabId) {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.action === 'processQuestion') {
+    handleQuestion(msg.question, sender.tab?.id, sender.frameId)
+      .then(() => sendResponse({ ok: true }))
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+});
+
+// Resolve the question's image URL from WebSocket data or DOM fallback.
+async function getQuestionImage(question, tabId, frameId) {
+  if (question.imageUrl) return question.imageUrl;
+  const response = await sendToTabAsync(tabId, frameId, 'getQuestionImageUrl');
+  return response?.imageUrl || null;
+}
+
+// Route each question type to the right OpenAI call and send the result back.
+async function handleQuestion(question, tabId, frameId) {
+  if (!question?.title || !tabId) return;
   const t0 = performance.now();
-  console.log(`${TAG} Question: "${question.title}" | Type: ${question.type} | Choices: [${(question.choices || []).join(', ')}]`);
+  const ms = () => `${Math.round(performance.now() - t0)}ms`;
+
+  log(`Question: "${shortText(question.title, 120)}" | Type: ${question.type} | Choices: [${(question.choices || []).join(', ')}]`);
 
   try {
-    const { openaiApiKey } = await chrome.storage.sync.get(['openaiApiKey']);
-    if (!openaiApiKey?.trim()) {
-      await safeSend(tabId, { action: 'showError', message: 'Set your OpenAI API key in the extension settings.' });
+    const openaiApiKey = await getApiKey();
+    if (!openaiApiKey) {
+      sendToTab(tabId, frameId, 'showError', { message: 'No API key set. Click the kAIhoot icon to configure.' });
       return;
     }
 
-    const settings = await chrome.storage.sync.get(['highlightOption', 'autoClickOption', 'answerDelay', 'silentMode']);
+    const settings = await chrome.storage.sync.get([
+      'highlightOption',
+      'autoClickOption',
+      'pinHighlightOption',
+      'pinAutoClickOption',
+      'answerDelay',
+      'silentMode'
+    ]);
+
     const opts = {
       highlight: settings.highlightOption !== false,
       autoClick: settings.autoClickOption !== false,
@@ -63,51 +84,84 @@ async function processQuestion(question, tabId) {
     };
 
     if (question.type === 'pin_it') {
-      let imageUrl = question.imageUrl;
-      if (!imageUrl) {
-        const resp = await chrome.tabs.sendMessage(tabId, { action: 'getPinImageUrl' }).catch(() => null);
-        imageUrl = resp?.imageUrl;
-      }
-      if (!imageUrl) { await safeSend(tabId, { action: 'showError', message: 'Could not find image for pin question' }); return; }
-      const coords = await answerPinQuestion(question.title, imageUrl);
-      console.log(`${TAG} Pin: ${coords.x.toFixed(1)}%, ${coords.y.toFixed(1)}% (${Math.round(performance.now() - t0)}ms)`);
-      await safeSend(tabId, { action: 'placePin', coords, options: opts });
-      broadcastAnswer(`📍 ${coords.x.toFixed(1)}%, ${coords.y.toFixed(1)}%`);
-
-    } else if (question.type === 'slider') {
-      const sliderConfig = question.sliderConfig || {};
-      const value = await answerSliderQuestion(question.title, sliderConfig);
-      console.log(`${TAG} Slider: ${value} (${Math.round(performance.now() - t0)}ms)`);
-      await safeSend(tabId, { action: 'setSlider', value, options: opts });
-      broadcastAnswer(`🎚️ ${value}`);
-
-    } else if (question.type === 'jumble') {
-      const answerWord = await answerJumbleQuestion(question.title, question.choices);
-      console.log(`${TAG} Jumble: "${answerWord}" (${Math.round(performance.now() - t0)}ms)`);
-      await safeSend(tabId, { action: 'reorderJumble', answerWord, options: opts });
-      broadcastAnswer(`🧩 ${answerWord}`);
-
-    } else if (question.type === 'open_ended') {
-      const answer = await answerOpenEndedQuestion(question.title);
-      console.log(`${TAG} Open-ended: "${answer}" (${Math.round(performance.now() - t0)}ms)`);
-      await safeSend(tabId, { action: 'typeOpenEnded', answer, options: opts });
-      broadcastAnswer(`✏️ ${answer}`);
-
-    } else {
-      const isMulti = question.type === 'multiple_select_quiz';
-      const answers = isMulti
-        ? await answerMultiSelect(question.title, question.choices)
-        : [await answerQuestion(question.title, question.choices)];
-      console.log(`${TAG} Answer: [${answers.join(', ')}] (${Math.round(performance.now() - t0)}ms)`);
-      await safeSend(tabId, { action: 'highlightAnswer', answers, isMultiSelect: isMulti, options: opts });
-      broadcastAnswer(answers.join(', '));
+      opts.highlight = settings.pinHighlightOption !== false;
+      opts.autoClick = !!settings.pinAutoClickOption;
     }
-  } catch (err) {
-    const typeLabel = question.type ? ` (${question.type})` : '';
-    console.error(`${TAG} Failed${typeLabel}: ${err.message} (${Math.round(performance.now() - t0)}ms)`);
-    await safeSend(tabId, { action: 'showError', message: `${err.message || 'Failed to get answer'}${typeLabel}` });
+
+    switch (question.type) {
+      case 'pin_it': {
+        let imageUrl = question.imageUrl;
+        let imageSource = imageUrl ? 'websocket' : null;
+        if (!imageUrl) {
+          const response = await sendToTabAsync(tabId, frameId, 'getPinImageUrl');
+          imageUrl = response?.imageUrl;
+          imageSource = imageUrl ? 'dom' : null;
+        }
+        if (!imageUrl) throw new Error('No image found for pin question');
+        log(`Pin image (${imageSource}): ${imageUrl.slice(0, 100)}${imageUrl.length > 100 ? '...' : ''}`);
+        const coords = await answerPinQuestion(question.title, imageUrl);
+        log(`Pin: ${coords.x.toFixed(1)}%, ${coords.y.toFixed(1)}% (${ms()})`);
+        sendToTab(tabId, frameId, 'placePin', { coords, options: opts, elapsed: ms() });
+        break;
+      }
+
+      case 'jumble': {
+        const answerWord = await answerJumbleQuestion(question.title, question.choices);
+        log(`Jumble: "${answerWord}" (${ms()})`);
+        sendToTab(tabId, frameId, 'reorderJumble', { answerWord, options: opts, elapsed: ms() });
+        break;
+      }
+
+      case 'slider': {
+        const imageUrl = await getQuestionImage(question, tabId, frameId);
+        const value = await answerSliderQuestion(question.title, question.sliderConfig || {}, imageUrl);
+        log(`Slider: ${value} (${ms()})`);
+        sendToTab(tabId, frameId, 'setSlider', { value, options: opts, elapsed: ms() });
+        break;
+      }
+
+      case 'open_ended': {
+        const imageUrl = await getQuestionImage(question, tabId, frameId);
+        const answer = await answerOpenEndedQuestion(question.title, imageUrl);
+        log(`Open-ended: "${answer}" (${ms()})`);
+        sendToTab(tabId, frameId, 'typeOpenEnded', { answer, options: opts, elapsed: ms() });
+        break;
+      }
+
+      default: {
+        const imageUrl = await getQuestionImage(question, tabId, frameId);
+        const isMultiSelect = question.type === 'multiple_select_quiz';
+        let answers;
+        if (isMultiSelect) {
+          answers = await answerMultiSelect(question.title, question.choices, imageUrl);
+        } else {
+          const answer = await answerQuestion(question.title, question.choices, imageUrl);
+          answers = [answer];
+        }
+        log(`Answer: [${answers.join(', ')}] (${ms()})`);
+        sendToTab(tabId, frameId, 'highlightAnswer', { answers, isMultiSelect, options: opts, elapsed: ms() });
+      }
+    }
+  } catch (error) {
+    err(`Failed (${ms()}):`, error);
+    sendToTab(tabId, frameId, 'showError', { message: error.message || 'Unknown error' });
   }
 }
 
-function broadcastAnswer(answer) { try { chrome.runtime.sendMessage({ action: 'updateAnswer', answer }).catch(() => {}); } catch (_) {} }
-async function safeSend(tabId, message) { try { await chrome.tabs.sendMessage(tabId, message); } catch (_) {} }
+function sendToTab(tabId, frameId, action, data = {}) {
+  const options = Number.isInteger(frameId) && frameId >= 0 ? { frameId } : undefined;
+  chrome.tabs.sendMessage(tabId, { action, ...data }, options).catch(() => {});
+}
+
+function sendToTabAsync(tabId, frameId, action, data = {}) {
+  const options = Number.isInteger(frameId) && frameId >= 0 ? { frameId } : undefined;
+  return new Promise(resolve => {
+    chrome.tabs.sendMessage(tabId, { action, ...data }, options, response => {
+      if (chrome.runtime.lastError) {
+        resolve(null);
+        return;
+      }
+      resolve(response);
+    });
+  });
+}

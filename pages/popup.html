@@ -6,60 +6,114 @@
   <link rel="stylesheet" href="../styles/styles.css">
 </head>
 <body class="popup-container">
-<div class="popup-scroll">
+  <div class="popup-scroll">
 
-  <div class="header">
-    <h1 class="title">kAIhoot</h1>
-    <div class="version" id="versionLabel">v...</div>
-    <div id="apiStatus" class="api-status warn">No API key</div>
-  </div>
-
-  <div id="liveSection" class="live-section hidden">
-    <div class="live-label">Current Question</div>
-    <div id="liveQuestion" class="live-text"></div>
-    <div class="live-label answer-label">Answer</div>
-    <div id="liveAnswer" class="live-text live-answer">...</div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">Options</div>
-    <label class="checkbox-row"><input type="checkbox" id="highlight" class="checkbox" checked> Highlight answers</label>
-    <label class="checkbox-row"><input type="checkbox" id="autoclick" class="checkbox" checked> Auto-answer</label>
-    <label class="checkbox-row"><input type="checkbox" id="silentMode" class="checkbox"> Silent mode</label>
-    <div class="slider-row">
-      <label class="slider-label">Answer delay: <strong id="delayValue">0</strong>s</label>
-      <input type="range" id="answerDelay" class="slider" min="0" max="10" step="0.5" value="0">
-      <div class="slider-marks"><span>0s</span><span>5s</span><span>10s</span></div>
-    </div>
-  </div>
-
-  <div class="section">
-    <button id="toggleOpenAI" class="collapse-toggle">
-      <span class="collapse-label">OpenAI Settings</span>
-      <span id="collapseArrow" class="collapse-arrow">▸</span>
-    </button>
-    <div id="openaiSection" class="openai-section hidden">
-      <label class="field-label">API Key</label>
-      <input type="password" id="openaiApiKey" class="field-input" placeholder="sk-..." aria-label="OpenAI API Key">
-      <label class="field-label">Model</label>
-      <input type="text" id="openaiModel" class="field-input" placeholder="gpt-5-mini" value="gpt-5-mini" aria-label="OpenAI Model">
-      <div class="openai-actions">
-        <button id="saveOpenAI" class="btn-save">Save</button>
-        <button id="clearOpenAI" class="btn-clear">Clear</button>
+    <!-- Compact header -->
+    <div class="header">
+      <div class="header-left">
+        <h1 class="title">kAIhoot</h1>
+        <span class="version" id="versionLabel">v...</span>
       </div>
-      <div class="openai-note">Your key is stored locally and never shared. Pin questions always use gpt-4.1 vision.</div>
+      <div id="apiStatus" class="api-pill missing">No key</div>
     </div>
-  </div>
 
-  <div class="footer">
-    <div class="footer-shortcut">Press <kbd>Alt+K</kbd> to manually trigger</div>
-    <a href="https://github.com/Gavri-dev/kAIhoot" target="_blank" rel="noopener" class="github-btn">
-      <svg class="github-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-      GitHub
-    </a>
-  </div>
+    <!-- Live Q&A - hidden until a question comes in -->
+    <div id="liveSection" class="live-card hidden">
+      <div class="live-row">
+        <div class="live-label">Q</div>
+        <div id="questionText" class="live-q active">-</div>
+      </div>
+      <div class="live-divider"></div>
+      <div class="live-row">
+        <div class="live-label live-label-a">A</div>
+        <div id="answerText" class="live-a">-</div>
+      </div>
+    </div>
 
-</div>
-<script src="../scripts/popup.js" defer></script>
+    <!-- Settings -->
+    <div class="section">
+      <div class="section-title">Settings</div>
+      <div class="toggle-row"><span>Highlight answers</span><label class="toggle"><input type="checkbox" id="highlight" checked><span class="toggle-track"></span></label></div>
+      <div class="toggle-row"><span>Auto-click</span><label class="toggle"><input type="checkbox" id="autoclick" checked><span class="toggle-track"></span></label></div>
+      <div class="toggle-row"><span>Pin: show crosshair</span><label class="toggle"><input type="checkbox" id="pinHighlight" checked><span class="toggle-track"></span></label></div>
+      <div class="toggle-row"><span>Pin: auto-place</span><label class="toggle"><input type="checkbox" id="pinAutoclick"><span class="toggle-track"></span></label></div>
+      <div class="pin-note">Pin placement can be approximate, so suggest-only is recommended.</div>
+      <div class="toggle-row"><span>Silent mode</span><label class="toggle"><input type="checkbox" id="silent"><span class="toggle-track"></span></label></div>
+      <div class="slider-row">
+        <div class="slider-header">
+          <span>Answer delay</span>
+          <span class="slider-val" id="delayValue">Off</span>
+        </div>
+        <input type="range" id="answerDelay" class="slider" min="0" max="30" step="0.5" value="0">
+        <div class="slider-marks"><span>0s</span><span>15s</span><span>30s</span></div>
+      </div>
+    </div>
+
+    <!-- OpenAI config -->
+    <div class="section">
+      <button id="toggleOpenAI" class="collapse-toggle">
+        <span class="collapse-label">API Configuration</span>
+        <span id="collapseArrow" class="collapse-arrow">▸</span>
+      </button>
+      <div id="openaiSection" class="openai-section hidden">
+        <label class="field-label">API Key</label>
+        <input type="password" id="openaiApiKey" class="field-input" placeholder="sk-..." aria-label="OpenAI API Key">
+        <div class="model-row">
+          <div class="model-col">
+            <label class="field-label">Model</label>
+            <select id="openaiModel" class="field-select" aria-label="OpenAI Model">
+              <optgroup label="Fast &amp; cheap">
+                <option value="gpt-5-nano">gpt-5-nano</option>
+                <option value="gpt-4.1-nano">gpt-4.1-nano</option>
+              </optgroup>
+              <optgroup label="Balanced">
+                <option value="gpt-5-mini" selected>gpt-5-mini</option>
+                <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+              </optgroup>
+              <optgroup label="Smartest">
+                <option value="gpt-5">gpt-5</option>
+                <option value="gpt-5.1">gpt-5.1</option>
+                <option value="gpt-5.2">gpt-5.2</option>
+                <option value="gpt-5.4">gpt-5.4</option>
+                <option value="gpt-4.1">gpt-4.1</option>
+              </optgroup>
+            </select>
+          </div>
+          <div class="model-col">
+            <label class="field-label">Vision model</label>
+            <select id="openaiVisionModel" class="field-select" aria-label="Vision Model">
+              <optgroup label="Recommended">
+                <option value="gpt-4.1" selected>gpt-4.1</option>
+                <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+              </optgroup>
+              <optgroup label="With reasoning">
+                <option value="gpt-5-mini">gpt-5-mini</option>
+                <option value="gpt-5">gpt-5</option>
+                <option value="gpt-5.1">gpt-5.1</option>
+                <option value="gpt-5.2">gpt-5.2</option>
+                <option value="gpt-5.4">gpt-5.4</option>
+              </optgroup>
+            </select>
+          </div>
+        </div>
+        <div class="openai-actions">
+          <button id="saveApi" class="btn-save">Save</button>
+          <button id="clearApi" class="btn-clear">Clear</button>
+        </div>
+        <div class="openai-note">Key stored locally, never shared except with OpenAI.</div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <div class="footer-shortcut">Press <kbd>Alt+K</kbd> to manually trigger</div>
+      <a href="https://github.com/Gavri-dev/kAIhoot" target="_blank" rel="noopener" class="github-btn">
+        <svg class="github-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </div>
+
+  </div>
+  <script type="module" src="../scripts/popup.js"></script>
 </body>
 </html>

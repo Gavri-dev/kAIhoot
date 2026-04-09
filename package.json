@@ -1,1 +1,11 @@
-{ "name": "kaihoot", "version": "3.4.0", "private": true }
+{
+  "name": "kaihoot",
+  "version": "3.5.0",
+  "description": "AI-powered Kahoot assistant (Chrome Extension)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/core.test.mjs",
+    "check": "npm test && node tools/check-syntax.mjs"
+  }
+}

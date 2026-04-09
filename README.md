@@ -10,7 +10,7 @@
 
 **The most complete Kahoot AI assistant - supports every question type, including ones no other tool can handle.**
 
-[![Version](https://img.shields.io/badge/Version-3.4.0-blueviolet?style=for-the-badge)](https://github.com/Gavri-dev/kAIhoot/releases)
+[![Version](https://img.shields.io/badge/Version-3.5.0-blueviolet?style=for-the-badge)](https://github.com/Gavri-dev/kAIhoot/releases)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 [![Chrome MV3](https://img.shields.io/badge/Chrome-Manifest_V3-blue?style=for-the-badge&logo=googlechrome&logoColor=white)](https://developer.chrome.com/docs/extensions/develop/migrate/what-is-mv3)
 [![OpenAI](https://img.shields.io/badge/Powered_by-OpenAI-412991?style=for-the-badge&logo=openai&logoColor=white)](https://platform.openai.com/api-keys)
@@ -56,17 +56,19 @@ kAIhoot works on **every** question type Kahoot offers, answers in real-time dur
 
 ##  Supported Question Types
 
-** Multiple Choice & True/False** - Reads the question and all choices from the WebSocket, sends to GPT, highlights and clicks the correct answer. Handles image-based choices by reading `aria-label` attributes.
+**Multiple Choice & True/False** - Reads the question and all choices from the WebSocket, sends to GPT, highlights and clicks the correct answer. Handles image-based choices by reading `aria-label` attributes.
 
-** Multi-Select** - Evaluates each option independently with a YES/NO per-option prompt. Filters out fabricated or nonsensical choices and selects all correct answers (typically 2-4 out of the options).
+**Multi-Select** - Evaluates each option independently with a YES/NO per-option prompt. Filters out fabricated or nonsensical choices and selects all correct answers (typically 2-4 out of the options).
 
-** Pin-It (Map & Image Questions)** - Sends the image to GPT-4.1 Vision with a coordinate system and landmark reference points for world maps. Places the pin on the correct location via SVG coordinate injection. No other Kahoot tool does this.
+**Pin-It (Map & Image Questions)** - Sends the image to the vision model with a step-by-step spatial reasoning prompt. The AI describes what it sees, finds visible landmarks, and estimates coordinates relative to them. Works with any image - world maps, regional maps, photos, diagrams, floor plans. Places the pin via SVG coordinate injection. No other Kahoot tool does this.
 
-** Jumble (Reorder)** - Reads shuffled tiles, asks GPT for the correct order, computes the tile permutation, then reorders through React fiber tree manipulation and drag-click simulation.
+**Jumble (Reorder)** - Reads shuffled tiles, asks GPT for the correct order, computes the tile permutation, then reorders through React fiber tree manipulation and drag-click simulation.
 
-** Slider (Numeric)** - Asks GPT the factual question, snaps the answer to the nearest valid step value using offset math (`min + round((value - min) / step) * step`), sends the WS answer during the loading animation, then sets the visual slider and clicks submit.
+**Slider (Numeric)** - Asks GPT the factual question, snaps the answer to the nearest valid step value using offset math (`min + round((value - min) / step) * step`), sends the WS answer during the loading animation, then sets the visual slider and clicks submit. Handles negative ranges too.
 
-** Open-Ended (Type Answer)** - Generates a short answer within the character limit, types it character-by-character with simulated keyboard events (keydown → InputEvent → keyup) to work with React controlled inputs, then submits.
+**Open-Ended (Type Answer)** - Generates a short answer within the character limit, strips any extra formatting the AI might add, types it character-by-character with simulated keyboard events (keydown → InputEvent → keyup) to work with React controlled inputs, then submits.
+
+**Image-Based Questions (Vision Fallback)** - When any question has an attached image containing critical content (code snippets, diagrams, equations, graphs), the text model automatically detects that it can't answer without seeing the image and retries with the vision model. Works across all question types and languages — no hardcoded keyword detection.
 
 ##  Installation
 
@@ -110,11 +112,11 @@ The extension needs an OpenAI API key to work. This is what lets it talk to GPT.
 
 1. Click the puzzle piece icon in Chrome's top-right toolbar to see your extensions
 2. Click on **kAIhoot** to open the popup
-3. Click **"OpenAI Settings"** to expand the settings panel
+3. Click **"API Configuration"** to expand the settings panel
 4. Paste your API key into the **"API Key"** field
 5. Leave the model as `gpt-5-mini` (fastest and cheapest option). You can change it later
 6. Click **Save**
-7. The status should change from "No API key" to "API key set"
+7. The status should change from "No key" to "Connected"
 
 ### Step 5: Play
 
@@ -130,9 +132,12 @@ That's it. If you want the extension to wait before answering (so it doesn't loo
 |---|---|---|
 | Highlight Answer | ✅ On | Green glow on the correct answer |
 | Auto-Click | ✅ On | Automatically clicks/submits the answer |
-| Answer Delay | 0s | Wait 0-10 seconds before answering (shows a countdown) |
+| Pin: Show Crosshair | ✅ On | Shows a crosshair where the pin should go |
+| Pin: Auto-Place | ❌ Off | Automatically places the pin (off by default since pin accuracy can vary) |
+| Answer Delay | Off | Wait 0-30 seconds before answering (shows a countdown) |
 | Silent Mode | ❌ Off | Hides all on-screen indicators (status badge, timer, highlights) |
-| Model | `gpt-5-mini` | Any OpenAI model. `gpt-5-mini` is fast and cheap. `gpt-5` is smarter but slower |
+| Model | `gpt-5-mini` | Dropdown with all available models, grouped by speed/intelligence |
+| Vision Model | `gpt-4.1` | Model used for pin-it and image-dependent questions |
 
 ##  How It Works
 
@@ -171,11 +176,11 @@ Questions get sent to AI the instant they arrive via WebSocket, during the loadi
 
 ##  Privacy
 
-Your API key is stored locally in `chrome.storage.sync` and only ever sent to OpenAI. There's no backend, no analytics, no telemetry, no data collection. The extension only requests permissions for `storage`, `kahoot.it`, and `api.openai.com`.
+Your API key is stored locally in `chrome.storage.local` and only ever sent to OpenAI. There's no backend, no analytics, no telemetry, no data collection. The extension only requests permissions for `storage`, `kahoot.it`, and `api.openai.com`.
 
 ##  API Cost
 
-A typical 20-question game on `gpt-5-mini` costs about $0.01-0.03. Pin-it questions are a bit more (~$0.02 each) because they use `gpt-4.1` for vision. $5 of OpenAI credit will last you a very long time.
+A typical 20-question game on `gpt-5-mini` costs about $0.01-0.03. Questions that use the vision model (pin-it and image-dependent questions) cost a bit more (~$0.02 each). $5 of OpenAI credit will last you a very long time.
 
 ##  Troubleshooting
 
@@ -190,7 +195,7 @@ A typical 20-question game on `gpt-5-mini` costs about $0.01-0.03. Pin-it questi
 
 **Answers are wrong or empty**
 - Check that your OpenAI account has credit at [platform.openai.com/settings/organization/billing](https://platform.openai.com/settings/organization/billing)
-- Try switching the model to `gpt-5` for harder questions (slower but smarter)
+- Try switching to a smarter model from the dropdown (like `gpt-5` or `gpt-5.4`) for harder questions
 
 **Extension doesn't answer some question types**
 - The host might have disabled "Show questions & answers on players' devices"
@@ -201,7 +206,7 @@ A typical 20-question game on `gpt-5-mini` costs about $0.01-0.03. Pin-it questi
 
 ##  Tested With
 
-Standard quiz (4-choice), true/false, multi-select (2-4 correct), pin-it with world maps and custom images, jumble (3-8 tiles), slider with numeric ranges, open-ended with character limits, and image-based answer choices. Also works with mixed-type quizzes. Surveys and polls are auto-skipped since they're non-scored.
+Standard quiz (4-choice), true/false, multi-select (2-4 correct), pin-it with world maps and custom images, jumble (3-8 tiles), slider with numeric ranges (including negative values), open-ended with character limits, image-based answer choices, and image-dependent questions (code in images, diagrams, equations). Also works with mixed-type quizzes. Surveys and polls are auto-skipped since they're non-scored.
 
 ##  Credits
 

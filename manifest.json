@@ -1,15 +1,61 @@
 {
-  "name": "kAIhoot",
-  "version": "3.4.0",
-  "description": "Not affiliated with Kahoot!: Automatically answer Kahoot questions using your own OpenAI API key.",
-  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
   "manifest_version": 3,
-  "action": { "default_popup": "pages/popup.html", "default_title": "kAIhoot v3.4.0" },
-  "commands": { "manual-answer": { "suggested_key": { "default": "Alt+K" }, "description": "Manually trigger answer detection" } },
-  "permissions": ["storage"],
-  "content_scripts": [{ "matches": ["*://*.kahoot.it/*"], "js": ["scripts/content.js"], "run_at": "document_start", "all_frames": true }],
-  "web_accessible_resources": [{ "resources": ["scripts/injected.js"], "matches": ["*://*.kahoot.it/*"] }],
-  "background": { "service_worker": "scripts/autoresponder.js", "type": "module" },
-  "host_permissions": ["https://*.kahoot.it/*", "https://api.openai.com/*"],
-  "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'self';" }
+  "version": "3.5.0",
+  "name": "kAIhoot",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "pages/popup.html",
+    "default_title": "kAIhoot v3.5.0"
+  },
+  "commands": {
+    "manual-answer": {
+      "suggested_key": {
+        "default": "Alt+K"
+      },
+      "description": "Manually trigger answer detection"
+    }
+  },
+  "permissions": [
+    "storage"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.kahoot.it/*"
+      ],
+      "js": [
+        "scripts/content-matching.js",
+        "scripts/content-dom-adapter.js",
+        "scripts/content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "scripts/injected.js"
+      ],
+      "matches": [
+        "*://*.kahoot.it/*"
+      ]
+    }
+  ],
+  "background": {
+    "service_worker": "scripts/autoresponder.js",
+    "type": "module"
+  },
+  "host_permissions": [
+    "https://*.kahoot.it/*",
+    "https://api.openai.com/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self';"
+  },
+  "description": "Not affiliated with Kahoot!: Automatically answer Kahoot questions using your own OpenAI API key."
 }

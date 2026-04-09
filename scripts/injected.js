@@ -1,9 +1,14 @@
-// kAIhoot — WebSocket interception layer (page context)
+// This file runs in the page context so it can talk to Kahoot's real
+// WebSocket and React tree.
 
 (function () {
   'use strict';
 
+  // Styled logs so kAIhoot stands out in DevTools among Kahoot's own noise.
   const TAG = '[kAIhoot]';
+  const STYLE = 'color:#10b981;font-weight:bold';
+  const log = (...args) => console.log(`%c${TAG}`, STYLE, ...args);
+  const warn = (...args) => console.warn(`%c${TAG}`, STYLE, ...args);
   const OldWebSocket = window.WebSocket;
 
   window.__kahootWS = null;
@@ -20,8 +25,7 @@
   const SLIDER_TYPES = new Set(['slider']);
   const OPEN_ENDED_TYPES = new Set(['open_ended']);
 
-  // ─── WebSocket Hook ──────────────────────────────────────────────
-
+  // Wrap the native WebSocket so we can watch incoming questions and send answers back through the same channel.
   window.WebSocket = function (url, protocols) {
     const ws = protocols ? new OldWebSocket(url, protocols) : new OldWebSocket(url);
     window.__kahootWS = ws;
@@ -36,7 +40,7 @@
           if (item.data?.gameid && window.kahootGameId !== item.data.gameid) {
             window.kahootGameId = item.data.gameid;
             window.kahootQuestionIndex = 0;
-            console.log(TAG, 'Game joined:', window.kahootGameId);
+            log('Game joined:', window.kahootGameId);
           }
           if (item.id) {
             const msgId = parseInt(item.id, 10);
@@ -44,10 +48,10 @@
           }
           if (item.data?.content) parseQuestionContent(item.data.content);
         }
-      } catch (_) {}
+      } catch (e) { console.debug(TAG, 'WS parse error:', e.message); }
     });
 
-    ws.addEventListener('open', () => console.log(TAG, 'WS connected'));
+    ws.addEventListener('open', () => log('WS connected'));
 
     const origSend = ws.send.bind(ws);
     ws.send = function (data) {
@@ -57,15 +61,15 @@
         for (const item of items) {
           if (item.data?.content) {
             const content = typeof item.data.content === 'string' ? JSON.parse(item.data.content) : item.data.content;
-            if (content.type) console.log(TAG, 'WS OUT:', content.type, JSON.stringify(content).slice(0, 200));
+            if (content.type) log('WS OUT:', content.type, JSON.stringify(content).slice(0, 200));
           }
         }
-      } catch (_) {}
+      } catch (e) { console.debug(TAG, 'WS send parse error:', e.message); }
       return origSend(data);
     };
 
     ws.addEventListener('close', () => {
-      console.log(TAG, 'WS closed');
+      log('WS closed');
       window.__kahootWS = null;
       window.kahootClientId = null;
       window.kahootGameId = null;
@@ -82,9 +86,9 @@
     CONNECTING: { value: 0 }, OPEN: { value: 1 }, CLOSING: { value: 2 }, CLOSED: { value: 3 }
   });
 
-  // ─── Helpers ─────────────────────────────────────────────────────
-
   const _decodeEl = document.createElement('textarea');
+
+  // Kahoot mixes plain text with HTML-encoded strings. Normalize them once here.
   function decodeEntities(str) {
     if (typeof str !== 'string') return String(str ?? '');
     _decodeEl.innerHTML = str;
@@ -93,14 +97,12 @@
 
   const NON_SCORED_TYPES = new Set(['survey', 'word_cloud', 'poll']);
 
-  // ─── Question Parsing ────────────────────────────────────────────
-
+  // Convert Kahoot's payload into the simpler question shape the rest of the extension expects.
   function parseQuestionContent(raw) {
     try {
       const content = typeof raw === 'string' ? JSON.parse(raw) : raw;
       if (!content.title && !content.question) return;
 
-      // Signal non-scored types so the UI can clean up
       if (NON_SCORED_TYPES.has(content.type)) {
         window.dispatchEvent(new CustomEvent('kahootNonScoredQuestion', { detail: { type: content.type } }));
         return;
@@ -117,8 +119,7 @@
       let sliderConfig = null;
 
       if (isSlider) {
-        // Extract slider range from WS content
-        // Kahoot sends range info in various possible fields
+
         const range = content.range || content.slider || {};
         sliderConfig = {
           min: range.min ?? content.min ?? null,
@@ -126,7 +127,7 @@
           step: range.step ?? content.step ?? null,
           unit: range.unit ?? content.unit ?? ''
         };
-        console.log(TAG, 'Slider config from WS:', JSON.stringify(sliderConfig));
+        log('Slider config from WS:', JSON.stringify(sliderConfig));
 
       } else if (isJumble) {
         const rawChoices = content.choices || [];
@@ -134,7 +135,7 @@
           if (typeof c === 'string') return decodeEntities(c);
           return decodeEntities(c.answer || c.text || c.label || String(c));
         });
-        // DOM fallback for tiles
+
         if (choices.length === 0 || choices.every(c => !c)) {
           let i = 0;
           while (true) {
@@ -144,7 +145,7 @@
             i++;
           }
         }
-        console.log(TAG, 'Jumble tiles:', choices);
+        log('Jumble tiles:', choices);
         window.kahootWSTiles = [...choices];
         if (choices.length === 0) return;
 
@@ -159,8 +160,6 @@
           return '';
         });
 
-        // For image-based choices, use "Image N" placeholders.
-        // Content.js will poll the DOM for real aria-labels before sending to AI.
         const hasImages = choices.some(c => c === '') &&
           rawChoices.some(c => typeof c === 'object' && (c.image || c.imageUrl || c.media?.image || c.media?.url));
         if (hasImages) {
@@ -170,6 +169,7 @@
       }
 
       let imageUrl = content.image || content.media?.image || content.media?.url || null;
+      if (isPin) log('Pin image from WS:', imageUrl || '(none, will try DOM)');
 
       const question = {
         title: decodeEntities(content.title || content.question),
@@ -182,11 +182,10 @@
 
       window.kahootQuestionIndex = question.questionIndex;
       window.dispatchEvent(new CustomEvent('kahootQuestionParsed', { detail: question }));
-    } catch (_) {}
+    } catch (e) { console.debug(TAG, 'Question parse error:', e.message); }
   }
 
-  // ─── WS Payload Builder ──────────────────────────────────────────
-
+  // Build answer packets that match Kahoot's own controller messages closely enough to be accepted.
   function makePayload(contentObj) {
     const { kahootGameId: gameid, kahootClientId: clientId } = window;
     window.kahootMessageId++;
@@ -202,18 +201,18 @@
     }];
   }
 
+  // Bail if the socket isn't ready. Better to skip than send junk.
   function wsSend(payload) {
     const ws = window.__kahootWS;
     if (!ws || ws.readyState !== OldWebSocket.OPEN || !window.kahootGameId || !window.kahootClientId) {
-      console.warn(TAG, 'Cannot send — WS not ready');
+      warn('Cannot send - WS not ready');
       return false;
     }
     ws.send(JSON.stringify(payload));
     return true;
   }
 
-  // ─── Answer Event Listeners ──────────────────────────────────────
-
+  // These helpers keep the quiz and multi-select answer packets tiny.
   window.sendAutoClickMessage = function (choice) {
     wsSend(makePayload({ type: 'quiz', choice, questionIndex: window.kahootQuestionIndex }));
   };
@@ -222,80 +221,93 @@
     wsSend(makePayload({ type: 'multiple_select_quiz', choice: choices, questionIndex: window.kahootQuestionIndex }));
   };
 
-  // Pin answer
-  window.addEventListener('autoPinAnswer', function (event) {
-    const { x, y } = event.detail;
-    console.log(TAG, 'Pin:', x + '%,', y + '%');
+  // Pin placement has to respect the SVG viewBox, not just the rendered pixel box.
+  function getPinSvgPlacement(svgEl, x, y) {
+    const imgEl = svgEl.querySelector('[data-functional-selector="media-container__media-image"]') || svgEl.querySelector('image');
+    const viewBoxValues = String(svgEl.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+    const hasViewBox = viewBoxValues.length === 4 && viewBoxValues.every(Number.isFinite);
+    const [minX, minY, vbWidth, vbHeight] = hasViewBox ? viewBoxValues : [0, 0, svgEl.viewBox?.baseVal?.width || 0, svgEl.viewBox?.baseVal?.height || 0];
+    const imgX = parseFloat(imgEl?.getAttribute('x') || String(minX || 0));
+    const imgY = parseFloat(imgEl?.getAttribute('y') || String(minY || 0));
+    const imgWidth = parseFloat(imgEl?.getAttribute('width') || String(vbWidth || 0));
+    const imgHeight = parseFloat(imgEl?.getAttribute('height') || String(vbHeight || 0));
 
-    const svgEl = document.querySelector('[data-functional-selector="pin-input-svg"]');
-    if (!svgEl) { console.warn(TAG, 'Pin SVG not found'); return; }
-
-    // Convert % to SVG image coords, then to screen coords via getScreenCTM
-    const imgEl = svgEl.querySelector('image');
-    const imgW = parseFloat(imgEl?.getAttribute('width') || '2363');
-    const imgH = parseFloat(imgEl?.getAttribute('height') || '1268');
-    const svgX = (x / 100) * imgW;
-    const svgY = (y / 100) * imgH;
+    const svgX = imgX + (Math.max(0, Math.min(100, x)) / 100) * (imgWidth || vbWidth || 1);
+    const svgY = imgY + (Math.max(0, Math.min(100, y)) / 100) * (imgHeight || vbHeight || 1);
 
     let clientX, clientY;
     const ctm = svgEl.getScreenCTM();
-    if (ctm) {
+    if (ctm && typeof svgEl.createSVGPoint === 'function') {
       const pt = svgEl.createSVGPoint();
-      pt.x = svgX; pt.y = svgY;
+      pt.x = svgX;
+      pt.y = svgY;
       const sp = pt.matrixTransform(ctm);
-      clientX = sp.x; clientY = sp.y;
+      clientX = sp.x;
+      clientY = sp.y;
     } else {
       const rect = svgEl.getBoundingClientRect();
-      clientX = rect.left + (x / 100) * rect.width;
-      clientY = rect.top + (y / 100) * rect.height;
+      const screenBaseX = hasViewBox ? minX : imgX;
+      const screenBaseY = hasViewBox ? minY : imgY;
+      const screenW = (hasViewBox ? vbWidth : imgWidth) || rect.width || 1;
+      const screenH = (hasViewBox ? vbHeight : imgHeight) || rect.height || 1;
+      clientX = rect.left + ((svgX - screenBaseX) / screenW) * rect.width;
+      clientY = rect.top + ((svgY - screenBaseY) / screenH) * rect.height;
     }
 
-    // Try React setPinValue via memoizedProps and stateNode
+    return {
+      normalizedX: Math.max(0, Math.min(1, x / 100)),
+      normalizedY: Math.max(0, Math.min(1, y / 100)),
+      svgX,
+      svgY,
+      clientX,
+      clientY,
+    };
+  }
+
+  // React state updates are the cleanest path when Kahoot exposes the right internals.
+  function applyPinViaReact(svgEl, placement) {
     const fiberKey = Object.keys(svgEl).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
-    let pinSet = false;
+    if (!fiberKey) return false;
 
-    if (fiberKey) {
-      let fiber = svgEl[fiberKey];
-      let depth = 0;
-      while (fiber && depth < 40) {
-        if (fiber.memoizedProps?.setPinValue) {
-          fiber.memoizedProps.setPinValue({ x: x / 100, y: y / 100 });
-          pinSet = true;
-          console.log(TAG, 'setPinValue called at depth', depth);
-          break;
-        }
-        if (fiber.stateNode?.setPinValue) {
-          fiber.stateNode.setPinValue({ x: x / 100, y: y / 100 });
-          pinSet = true;
-          break;
-        }
-        fiber = fiber.return;
-        depth++;
+    let fiber = svgEl[fiberKey];
+    let depth = 0;
+    while (fiber && depth < 40) {
+      if (fiber.memoizedProps?.setPinValue) {
+        fiber.memoizedProps.setPinValue({ x: placement.normalizedX, y: placement.normalizedY });
+        log('setPinValue called at depth', depth);
+        return true;
       }
-
-    // Also try dispatching to state hooks with pin-like objects
-      if (!pinSet) {
-        fiber = svgEl[fiberKey];
-        depth = 0;
-        while (fiber && depth < 40) {
-          let hook = fiber.memoizedState;
-          while (hook) {
-            const val = hook.memoizedState;
-            if (val && typeof val === 'object' && ('x' in val || 'pinX' in val) && hook.queue?.dispatch) {
-              if ('pinX' in val) hook.queue.dispatch({ pinX: x / 100, pinY: y / 100 });
-              else hook.queue.dispatch({ x: x / 100, y: y / 100 });
-              pinSet = true;
-              break;
-            }
-            hook = hook.next;
-          }
-          if (pinSet) break;
-          fiber = fiber.return; depth++;
-        }
+      if (fiber.stateNode?.setPinValue) {
+        fiber.stateNode.setPinValue({ x: placement.normalizedX, y: placement.normalizedY });
+        return true;
       }
+      fiber = fiber.return;
+      depth++;
     }
 
-    // React onMouseDown/onMouseUp via props
+    fiber = svgEl[fiberKey];
+    depth = 0;
+    while (fiber && depth < 40) {
+      let hook = fiber.memoizedState;
+      while (hook) {
+        const val = hook.memoizedState;
+        if (val && typeof val === 'object' && ('x' in val || 'pinX' in val) && hook.queue?.dispatch) {
+          if ('pinX' in val) hook.queue.dispatch({ pinX: placement.normalizedX, pinY: placement.normalizedY });
+          else hook.queue.dispatch({ x: placement.normalizedX, y: placement.normalizedY });
+          return true;
+        }
+        hook = hook.next;
+      }
+      fiber = fiber.return;
+      depth++;
+    }
+
+    return false;
+  }
+
+  // Pointer events stay as a fallback for layouts where the React shortcut is missing.
+  function applyPinViaPointer(svgEl, placement) {
+    const { clientX, clientY } = placement;
     const propsKey = Object.keys(svgEl).find(k => k.startsWith('__reactProps$'));
     if (propsKey) {
       const props = svgEl[propsKey];
@@ -310,67 +322,79 @@
       if (props.onMouseUp) { fakeEvt.type = 'mouseup'; props.onMouseUp(fakeEvt); }
     }
 
-    // Native events
     const evtInit = { bubbles: true, cancelable: true, view: window, clientX, clientY, button: 0, buttons: 1 };
     svgEl.dispatchEvent(new MouseEvent('mousedown', evtInit));
     svgEl.dispatchEvent(new MouseEvent('mouseup', evtInit));
     svgEl.dispatchEvent(new MouseEvent('click', evtInit));
+  }
 
-    // WS
+  // Content.js sends this event after it decides whether Pin should auto-place or just highlight.
+  window.addEventListener('autoPinAnswer', function (event) {
+    const { x, y } = event.detail;
+    log('Pin:', x + '%,', y + '%');
+
+    const svgEl = document.querySelector('[data-functional-selector="pin-input-svg"]');
+    if (!svgEl) { warn('Pin SVG not found'); return; }
+
+    const placement = getPinSvgPlacement(svgEl, x, y);
+    let pinSet = applyPinViaReact(svgEl, placement);
+
+    if (!pinSet) {
+      applyPinViaPointer(svgEl, placement);
+      pinSet = true;
+      log('Pin fallback: pointer placement used');
+    }
+
     wsSend(makePayload({
-      type: 'pin_it', pinX: x / 100, pinY: y / 100,
+      type: 'pin_it', pinX: placement.normalizedX, pinY: placement.normalizedY,
       questionIndex: window.kahootQuestionIndex
     }));
 
-    console.log(TAG, 'Pin complete, setPinValue=' + pinSet);
+    log('Pin complete, setPinValue=' + pinSet + `, svg=(${placement.svgX.toFixed(2)}, ${placement.svgY.toFixed(2)})`);
 
-    // Click submit button after a short delay to let React update
-    setTimeout(() => {  // 300ms is enough — setPinValue is synchronous
+    setTimeout(() => {
       const btn = document.querySelector('button[data-functional-selector="pin-answer-submit"]')
                 || document.querySelector('button[data-functional-selector*="submit"]');
       if (btn) {
         btn.click();
-        console.log(TAG, 'Pin submit clicked');
+        log('Pin submit clicked');
       } else {
-        console.log(TAG, 'Pin submit button not found');
+        log('Pin submit button not found');
       }
-    }, 300);
+    }, pinSet ? 220 : 320);
   });
 
-  // Auto-click single
+  // Single-answer auto-click path.
   window.addEventListener('autoClickAnswer', e => window.sendAutoClickMessage(e.detail));
 
-  // Auto-click multi-select
+  // Multi-select auto-click path.
   window.addEventListener('autoClickMultiSelect', e => window.sendMultiSelectMessage(e.detail));
 
-  // ─── Jumble Reorder ──────────────────────────────────────────────
-
+  // Try WebSocket submission first for speed, then mirror the reorder in React so the UI stays honest.
   window.addEventListener('autoJumbleAnswer', async function (event) {
     const { answerWord, autoClick } = event.detail;
-    console.log(TAG, 'Jumble answer:', answerWord, 'autoClick:', autoClick);
+    log('Jumble answer:', answerWord, 'autoClick:', autoClick);
 
     if (!autoClick) {
-      console.log(TAG, 'AutoClick off — skipping WS and React for jumble');
+      log('AutoClick off - skipping WS and React for jumble');
       return;
     }
 
     const wsTiles = window.kahootWSTiles || [];
-    console.log(TAG, 'WS tiles:', wsTiles);
+    log('WS tiles:', wsTiles);
     if (wsTiles.length === 0 || !answerWord) return;
 
-    // WS submission
     const wsOrder = computeTileOrder(answerWord, wsTiles);
     if (wsOrder) {
-      console.log(TAG, 'WS order:', wsOrder, '→', wsOrder.map(i => wsTiles[i]).join(''));
+      log('WS order:', wsOrder, '→', wsOrder.map(i => wsTiles[i]).join(''));
       wsSend(makePayload({ type: 'jumble', choice: wsOrder, answer: wsOrder, sequence: wsOrder, questionIndex: window.kahootQuestionIndex }));
-      // WS submission is the real answer — signal content.js to skip DOM fallback
+
       window.dispatchEvent(new CustomEvent('kaihootJumbleHandled'));
     }
 
-    // React state manipulation (visual reorder + submit)
     let arrangerEl = document.querySelector('[class*="arranger__Container"]');
     if (!arrangerEl) {
-      // Poll briefly for arranger to render
+
       for (let i = 0; i < 10; i++) {
         await new Promise(r => setTimeout(r, 200));
         arrangerEl = document.querySelector('[class*="arranger__Container"]');
@@ -378,7 +402,7 @@
       }
     }
     if (!arrangerEl) {
-      console.log(TAG, 'No arranger container found — relying on WS submission only');
+      log('No arranger container found - relying on WS submission only');
       return;
     }
 
@@ -392,8 +416,8 @@
     }
 
     const domOrder = computeTileOrder(answerWord, domLabels);
-    if (!domOrder) { console.warn(TAG, 'Could not compute DOM order'); return; }
-    console.log(TAG, 'DOM labels:', domLabels, 'DOM order:', domOrder);
+    if (!domOrder) { warn('Could not compute DOM order'); return; }
+    log('DOM labels:', domLabels, 'DOM order:', domOrder);
 
     let reactReordered = false;
     const fk = Object.keys(arrangerEl).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
@@ -420,7 +444,7 @@
     }
 
     if (reactReordered) {
-      console.log(TAG, 'React state reordered');
+      log('React state reordered');
       let attempts = 0;
       function trySubmit() {
         attempts++;
@@ -440,12 +464,10 @@
     }
   });
 
-  // ─── Slider Answer ────────────────────────────────────────────────
-
-  // Early WS-only send (fires before UI is interactive for speed)
+  // Send the slider answer as soon as we know it. UI updates can happen a moment later.
   window.addEventListener('sliderWSSend', function (event) {
     const { value } = event.detail;
-    console.log(TAG, 'Slider early WS:', value);
+    log('Slider early WS:', value);
     wsSend(makePayload({
       type: 'slider',
       choice: value,
@@ -453,18 +475,17 @@
     }));
   });
 
+  // Slider inputs need a value write plus the events React listens for.
   window.addEventListener('autoSliderAnswer', function (event) {
     const { value, autoClick, skipWS } = event.detail;
-    console.log(TAG, 'Slider answer:', value, 'autoClick:', autoClick, 'skipWS:', !!skipWS);
+    log('Slider answer:', value, 'autoClick:', autoClick, 'skipWS:', !!skipWS);
 
-    // Find the range input
     const rangeInput = document.querySelector('input[data-functional-selector="slider-scale"]');
     if (!rangeInput) {
-      console.warn(TAG, 'Slider range input not found');
+      warn('Slider range input not found');
       return;
     }
 
-    // Snap value to slider's step/min/max (offset from min, not from 0)
     const rawMin = parseFloat(rangeInput.min);
     const rawMax = parseFloat(rangeInput.max);
     const rawStep = parseFloat(rangeInput.step);
@@ -473,9 +494,8 @@
     const step = isNaN(rawStep) ? 1 : rawStep;
     const snapped = min + Math.round((value - min) / step) * step;
     const clamped = Math.max(min, Math.min(max, snapped));
-    console.log(TAG, `Slider: target=${value}, snapped=${clamped} (min=${min}, max=${max}, step=${step})`);
+    log(`Slider: target=${value}, snapped=${clamped} (min=${min}, max=${max}, step=${step})`);
 
-    // Set value using React-compatible setter
     const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
     if (nativeSetter) {
       nativeSetter.call(rangeInput, clamped);
@@ -483,40 +503,36 @@
       rangeInput.value = clamped;
     }
 
-    // Trigger React's synthetic events
     rangeInput.dispatchEvent(new Event('input', { bubbles: true }));
     rangeInput.dispatchEvent(new Event('change', { bubbles: true }));
 
     if (!autoClick) {
-      console.log(TAG, 'AutoClick off — slider value set but not submitting');
+      log('AutoClick off - slider value set but not submitting');
       return;
     }
 
-    // WS submission (skip if already sent early by content.js)
     if (!skipWS) {
       wsSend(makePayload({
         type: 'slider',
         choice: clamped,
         questionIndex: window.kahootQuestionIndex
       }));
-      console.log(TAG, 'WS OUT: slider', JSON.stringify({ type: 'slider', choice: clamped }));
+      log('WS OUT: slider', JSON.stringify({ type: 'slider', choice: clamped }));
     }
 
-    // Click submit after short delay for React to update
     setTimeout(() => {
       const btn = document.querySelector('button[data-functional-selector="slider-submit"]')
                 || findSubmitButton();
       if (btn) {
         btn.click();
-        console.log(TAG, 'Slider submit clicked');
+        log('Slider submit clicked');
       } else {
-        console.log(TAG, 'Slider submit button not found');
+        log('Slider submit button not found');
       }
     }, 300);
   });
 
-  // ─── Shared Helpers ──────────────────────────────────────────────
-
+  // Submit button selectors drift between Kahoot builds, so keep this finder broad.
   function findSubmitButton() {
     for (const sel of [
       '[data-functional-selector="submit-button"]',
@@ -540,6 +556,7 @@
     return null;
   }
 
+  // Same tile-order logic as the shared helper, duplicated here because the page context is not a module.
   function computeTileOrder(answer, tiles) {
     const answerLower = answer.toLowerCase().replace(/[\s\-]/g, '');
     const tilesLower = tiles.map(t => t.toLowerCase().replace(/[\s\-]/g, ''));
@@ -573,26 +590,21 @@
     return permute(tilesLower.map((_, i) => i), []);
   }
 
-  // ─── Open-ended Text Answer ─────────────────────────────────────────
-
+  // Type open-ended answers character by character so controlled inputs do not drop updates.
   window.addEventListener('autoTypeAnswer', async function (event) {
     const { answer, autoClick } = event.detail;
-    console.log(TAG, 'Open-ended answer:', answer, 'autoClick:', autoClick);
+    log('Open-ended answer:', answer, 'autoClick:', autoClick);
 
     const input = document.querySelector('input[data-functional-selector="text-answer-input"]');
     if (!input) {
-      console.warn(TAG, 'Open-ended input not found');
+      warn('Open-ended input not found');
       return;
     }
 
-    // Respect the maxLength attribute if present
-    // Note: input.maxLength returns -1 when no maxlength is set, which would break .slice()
     const rawMaxLen = parseInt(input.getAttribute('maxlength'), 10);
     const maxLen = (rawMaxLen > 0) ? rawMaxLen : 20;
     const trimmed = answer.slice(0, maxLen);
 
-    // Type character-by-character with simulated keystrokes for React controlled inputs.
-    // Async delay between chars prevents React batching from dropping inputs.
     input.focus();
 
     const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -601,14 +613,12 @@
       const char = trimmed[i];
       const currentVal = trimmed.slice(0, i + 1);
 
-      // Set the native value to include this character
       if (nativeSetter) {
         nativeSetter.call(input, currentVal);
       } else {
         input.value = currentVal;
       }
 
-      // Dispatch keyboard events like a real keystroke
       input.dispatchEvent(new KeyboardEvent('keydown', { key: char, bubbles: true }));
       input.dispatchEvent(new InputEvent('input', {
         bubbles: true,
@@ -618,30 +628,32 @@
       }));
       input.dispatchEvent(new KeyboardEvent('keyup', { key: char, bubbles: true }));
 
-      // Small yield between chars so React can process each update
       if (i < trimmed.length - 1) await new Promise(r => setTimeout(r, 12));
     }
 
-    console.log(TAG, 'Open-ended typed:', input.value, '(expected:', trimmed + ')');
+    log('Open-ended typed:', input.value, '(expected:', trimmed + ')');
+
+    // Some React inputs need a change event or blur to validate the value.
+    input.dispatchEvent(new Event('change', { bubbles: true }));
 
     if (!autoClick) {
-      console.log(TAG, 'AutoClick off — answer typed but not submitting');
+      log('AutoClick off - answer typed but not submitting');
       return;
     }
 
-    // Poll for submit button to become enabled (React needs to process keystrokes)
     for (let i = 0; i < 20; i++) {
       const btn = document.querySelector('button[data-functional-selector="text-answer-submit"]')
                 || findSubmitButton();
       if (btn && !btn.disabled) {
         btn.click();
-        console.log(TAG, 'Open-ended submit clicked');
+        log('Open-ended submit clicked');
         return;
       }
       await new Promise(r => setTimeout(r, 150));
     }
-    console.log(TAG, 'Open-ended submit button not found/enabled after polling');
+    log('Open-ended submit button not found/enabled after polling');
   });
 
-  console.log(TAG, 'Injected — listening');
+  // If you see this log, the page hook is live.
+  log('Injected - listening');
 })();

@@ -1,20 +1,32 @@
-// kAIhoot — Content script
-// Bridges injected.js (page context) ↔ service worker (background)
+// Main content script. It watches the page, keeps a little bit of state, and
+// delegates the raw WebSocket work to injected.js.
 
 'use strict';
 
-// ─── Inject the WebSocket hook ───────────────────────────────────────
+// Let the script run inside embedded Kahoot iframes too, but avoid double init
+// if the browser reinjects the same frame.
+if (window.__kAIhootContentLoaded) {
+  console.log('%c[kAIhoot]', 'color:#10b981;font-weight:bold', 'Content script already loaded in this frame');
+} else {
+  window.__kAIhootContentLoaded = true;
+
+// Inject the page-context script before Kahoot starts talking over WebSocket.
 const script = document.createElement('script');
 script.src = chrome.runtime.getURL('scripts/injected.js');
 script.onload = () => script.remove();
 (document.head || document.documentElement).appendChild(script);
 
-// ─── State ───────────────────────────────────────────────────────────
+// Local state is small on purpose. The content script gets torn down often.
+const TAG = '[kAIhoot]';
+const STYLE = 'color:#10b981;font-weight:bold';
+const log = (...args) => console.log(`%c${TAG}`, STYLE, ...args);
+const warn = (...args) => console.warn(`%c${TAG}`, STYLE, ...args);
+
 let currentQuestion = null;
 let currentAnswer = null;
 let lastSentHash = null;
 let lastSentTitle = null;
-let loadingEndsAt = 0; // timestamp when pre-question loading bar finishes
+let loadingEndsAt = 0;
 let pendingRetryHash = null;
 let hasRetried = false;
 let statusEl = null;
@@ -24,18 +36,26 @@ let submitNonce = 0;
 let cachedSettings = {
   highlightOption: true,
   autoClickOption: true,
+  pinHighlightOption: true,
+  pinAutoClickOption: false,
   answerDelay: 0,
   silentMode: false
 };
 
+const matching = globalThis.kAIhootMatching;
+const domAdapter = globalThis.kAIhootDomAdapter;
+
+// Keep the latest settings in memory so the UI handlers do not keep hitting storage.
 function refreshSettings() {
   return new Promise(resolve => {
     chrome.storage.sync.get(
-      ['highlightOption', 'autoClickOption', 'answerDelay', 'silentMode'],
+      ['highlightOption', 'autoClickOption', 'pinHighlightOption', 'pinAutoClickOption', 'answerDelay', 'silentMode'],
       s => {
         cachedSettings = {
           highlightOption: s.highlightOption !== false,
           autoClickOption: s.autoClickOption !== false,
+          pinHighlightOption: s.pinHighlightOption !== false,
+          pinAutoClickOption: !!s.pinAutoClickOption,
           answerDelay: s.answerDelay ?? 0,
           silentMode: !!s.silentMode
         };
@@ -49,6 +69,8 @@ chrome.storage.onChanged.addListener((changes, ns) => {
   if (ns !== 'sync') return;
   if ('highlightOption' in changes) cachedSettings.highlightOption = changes.highlightOption.newValue !== false;
   if ('autoClickOption' in changes) cachedSettings.autoClickOption = changes.autoClickOption.newValue !== false;
+  if ('pinHighlightOption' in changes) cachedSettings.pinHighlightOption = changes.pinHighlightOption.newValue !== false;
+  if ('pinAutoClickOption' in changes) cachedSettings.pinAutoClickOption = !!changes.pinAutoClickOption.newValue;
   if ('answerDelay' in changes) cachedSettings.answerDelay = changes.answerDelay.newValue ?? 0;
   if ('silentMode' in changes) cachedSettings.silentMode = !!changes.silentMode.newValue;
   if (changes.silentMode?.newValue) {
@@ -57,22 +79,37 @@ chrome.storage.onChanged.addListener((changes, ns) => {
   }
 });
 
-// ─── Status Indicator ────────────────────────────────────────────────
+// Small status chip in the corner so the user can see what the bot is doing.
 function createStatusIndicator() {
   if (statusEl || cachedSettings.silentMode) return;
   statusEl = document.createElement('div');
   statusEl.id = 'kaihoot-status';
   statusEl.style.cssText = `
     position:fixed; top:10px; right:10px;
-    background:rgba(0,0,0,.8); color:#fff;
-    padding:8px 12px; border-radius:8px; z-index:10000;
+    background:rgba(20,20,20,.88); color:#fff;
+    padding:8px 14px; border-radius:10px; z-index:10000;
     font:600 12px/1.4 system-ui,sans-serif;
-    max-width:300px; word-wrap:break-word;
+    max-width:320px; word-wrap:break-word;
     pointer-events:none; transition:opacity .3s;
-    backdrop-filter:blur(6px);
+    backdrop-filter:blur(8px);
+    border:1px solid rgba(16,185,129,.3);
+    box-shadow:0 4px 12px rgba(0,0,0,.4);
   `;
-  statusEl.innerHTML = '<div id="kaihoot-status-main">kAIhoot: Ready</div><div id="kaihoot-status-detail" style="font-weight:400;font-size:11px;opacity:.7;margin-top:2px;display:none"></div>';
+  statusEl.innerHTML = '<div id="kaihoot-status-main" style="display:flex;align-items:center;gap:6px">kAIhoot: Ready</div><div id="kaihoot-status-detail" style="font-weight:400;font-size:11px;opacity:.7;margin-top:3px;display:none"></div>';
   document.body?.appendChild(statusEl);
+}
+
+let thinkingDot = null;
+function setThinking(on) {
+  if (!statusEl) return;
+  if (on && !thinkingDot) {
+    thinkingDot = document.createElement('span');
+    thinkingDot.style.cssText = 'width:6px;height:6px;border-radius:50%;background:#10b981;display:inline-block;animation:kaihoot-pulse 1s ease-in-out infinite;flex-shrink:0';
+    statusEl.querySelector('#kaihoot-status-main')?.appendChild(thinkingDot);
+  } else if (!on && thinkingDot) {
+    thinkingDot.remove();
+    thinkingDot = null;
+  }
 }
 
 function updateStatus(msg, detail) {
@@ -82,15 +119,18 @@ function updateStatus(msg, detail) {
   const mainEl = statusEl.querySelector('#kaihoot-status-main');
   const detailEl = statusEl.querySelector('#kaihoot-status-detail');
   if (mainEl) mainEl.textContent = `kAIhoot: ${msg}`;
+  // Pulse while waiting, stop when answer arrives
+  const isWaiting = msg.includes('Sending') || msg.includes('Retrying');
+  setThinking(isWaiting);
   if (detailEl) {
     if (detail) { detailEl.textContent = detail; detailEl.style.display = 'block'; }
     else detailEl.style.display = 'none';
   }
 }
 
-function removeStatusIndicator() { statusEl?.remove(); statusEl = null; }
+function removeStatusIndicator() { statusEl?.remove(); statusEl = null; thinkingDot = null; }
 
-// ─── Error Toasts ────────────────────────────────────────────────────
+// Toasts are only for actionable failures. Normal progress stays in the status chip.
 function showErrorToast(message) {
   if (cachedSettings.silentMode) return;
   while (activeToasts.length >= 3) { const old = activeToasts.shift(); old?.remove(); }
@@ -113,14 +153,19 @@ function showErrorToast(message) {
   }, 4500);
 }
 
-// ─── Hashing ─────────────────────────────────────────────────────────
+// Hash question title and choices together so retries do not double-send the same prompt.
 function questionHash(q) { return JSON.stringify({ t: q.title, c: q.choices }); }
 
-// ─── Send question to service worker ─────────────────────────────────
+function broadcastToPopup(action, data = {}) {
+  try { chrome.runtime.sendMessage({ action, ...data }).catch(() => {}); } catch (_) {}
+}
+
+// The background worker owns the OpenAI request. The content script only sends context.
 function sendQuestionToBackend(question) {
   lastSentHash = questionHash(question);
   const shortQ = question.title.length > 60 ? question.title.slice(0, 57) + '...' : question.title;
   updateStatus('Sending to AI...', shortQ);
+  broadcastToPopup('updateQuestion', { question: { title: question.title, type: question.type, choices: question.choices || [] } });
   chrome.runtime.sendMessage({ action: 'processQuestion', question }, () => {
     if (chrome.runtime.lastError) {
       updateStatus('Error: ' + chrome.runtime.lastError.message);
@@ -129,7 +174,7 @@ function sendQuestionToBackend(question) {
   });
 }
 
-// ─── Message Handling ────────────────────────────────────────────────
+// Most tab-side actions come back through this single message handler.
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   switch (request.action) {
     case 'highlightAnswer': {
@@ -139,22 +184,11 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
 
       const answersFromAI = request.answers || [];
 
-      // Reject stale answers that don't match current question's choices
       const currentChoices = currentQuestion?.choices || [];
       if (currentChoices.length > 0 && answersFromAI.length > 0) {
-        const anyMatch = answersFromAI.some(a => {
-          const aLow = a.toLowerCase().trim();
-          // Allow "Image N" only if current choices also have Image N placeholders
-          if (/^image\s*\d+$/i.test(aLow)) {
-            return currentChoices.some(c => /^image\s*\d+$/i.test(c));
-          }
-          return currentChoices.some(c => {
-            const cLow = c.toLowerCase().trim();
-            return cLow === aLow || cLow.includes(aLow) || aLow.includes(cLow);
-          });
-        });
-        if (!anyMatch) {
-          console.warn('[kAIhoot] Stale answer rejected:', answersFromAI, 'vs choices:', currentChoices);
+        const validAnswerSet = matching.validateAnswerSet(currentChoices, answersFromAI, !!request.isMultiSelect);
+        if (!validAnswerSet) {
+          warn('Stale or ambiguous answer rejected:', answersFromAI, 'vs choices:', currentChoices);
           sendResponse({ success: false });
           break;
         }
@@ -162,10 +196,11 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
 
       currentAnswer = answersFromAI.join(', ');
       const shortA = currentAnswer.length > 60 ? currentAnswer.slice(0, 57) + '...' : currentAnswer;
-      updateStatus('Answer received ✅', shortA);
-      try { chrome.runtime.sendMessage({ action: 'updateAnswer', answer: currentAnswer }).catch(() => {}); } catch (_) {}
+      const timing = request.elapsed ? ` (${request.elapsed})` : '';
+      updateStatus(`Answer received ✅${timing}`, shortA);
+      broadcastToPopup('updateAnswer', { answer: currentAnswer });
       cleanupOverlays();
-      console.log('[kAIhoot] Answers from AI:', JSON.stringify(answersFromAI), 'multiSelect:', request.isMultiSelect);
+      log('Answers from AI:', JSON.stringify(answersFromAI), 'multiSelect:', request.isMultiSelect);
       highlightAnswers(answersFromAI, request.isMultiSelect, request.options);
       sendResponse({ success: true });
       break;
@@ -193,12 +228,26 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
       }
       break;
 
-    case 'checkStatus':
-      sendResponse({ status: 'running', currentQuestion, timestamp: new Date().toISOString() });
+    case 'manualAnswer':
+      if (!currentQuestion) {
+        updateStatus('No active question');
+        sendResponse({ success: false, message: 'No active question' });
+        break;
+      }
+      pendingRetryHash = null;
+      hasRetried = false;
+      lastSentHash = null;
+      updateStatus('Manual retry...', currentQuestion.title);
+      sendQuestionToBackend(currentQuestion);
+      sendResponse({ success: true });
       break;
 
     case 'getPinImageUrl':
       sendResponse({ imageUrl: extractPinImageUrl() });
+      break;
+
+    case 'getQuestionImageUrl':
+      sendResponse({ imageUrl: extractQuestionImageUrl() });
       break;
 
     case 'placePin': {
@@ -206,8 +255,8 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
       pendingRetryHash = null;
       if (currentQuestion) lastSentHash = questionHash(currentQuestion);
       currentAnswer = `📍 ${request.coords.x.toFixed(1)}%, ${request.coords.y.toFixed(1)}%`;
-      updateStatus('Placing pin...', currentAnswer);
-      try { chrome.runtime.sendMessage({ action: 'updateAnswer', answer: currentAnswer }).catch(() => {}); } catch (_) {}
+      updateStatus(`Pin answer ✅${request.elapsed ? ` (${request.elapsed})` : ''}`, currentAnswer);
+      broadcastToPopup('updateAnswer', { answer: currentAnswer });
       placePinOnSvg(request.coords, request.options);
       sendResponse({ success: true });
       break;
@@ -218,8 +267,8 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
       pendingRetryHash = null;
       if (currentQuestion) lastSentHash = questionHash(currentQuestion);
       currentAnswer = `🧩 ${request.answerWord}`;
-      updateStatus('Solving jumble...', currentAnswer);
-      try { chrome.runtime.sendMessage({ action: 'updateAnswer', answer: currentAnswer }).catch(() => {}); } catch (_) {}
+      updateStatus(`Jumble answer ✅${request.elapsed ? ` (${request.elapsed})` : ''}`, currentAnswer);
+      broadcastToPopup('updateAnswer', { answer: currentAnswer });
       solveJumbleFromDOM(request.answerWord, request.options);
       sendResponse({ success: true });
       break;
@@ -230,8 +279,8 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
       pendingRetryHash = null;
       if (currentQuestion) lastSentHash = questionHash(currentQuestion);
       currentAnswer = `🎚️ ${request.value}`;
-      updateStatus('Setting slider...', currentAnswer);
-      try { chrome.runtime.sendMessage({ action: 'updateAnswer', answer: currentAnswer }).catch(() => {}); } catch (_) {}
+      updateStatus(`Slider answer ✅${request.elapsed ? ` (${request.elapsed})` : ''}`, currentAnswer);
+      broadcastToPopup('updateAnswer', { answer: currentAnswer });
       solveSliderFromDOM(request.value, request.options);
       sendResponse({ success: true });
       break;
@@ -242,8 +291,8 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
       pendingRetryHash = null;
       if (currentQuestion) lastSentHash = questionHash(currentQuestion);
       currentAnswer = `✏️ ${request.answer}`;
-      updateStatus('Typing answer...', currentAnswer);
-      try { chrome.runtime.sendMessage({ action: 'updateAnswer', answer: currentAnswer }).catch(() => {}); } catch (_) {}
+      updateStatus(`Open-ended answer ✅${request.elapsed ? ` (${request.elapsed})` : ''}`, currentAnswer);
+      broadcastToPopup('updateAnswer', { answer: currentAnswer });
       dispatchOpenEndedAnswer(request.answer, request.options);
       sendResponse({ success: true });
       break;
@@ -252,9 +301,8 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   return true;
 });
 
-// ─── Game Reset (clear stale dedup state) ────────────────────────────
 window.addEventListener('kahootGameReset', () => {
-  console.log('[kAIhoot] Game reset — clearing state');
+  log('Game reset - clearing state');
   currentQuestion = null;
   currentAnswer = null;
   lastSentHash = null; lastSentTitle = null;
@@ -265,15 +313,12 @@ window.addEventListener('kahootGameReset', () => {
   removeStatusIndicator();
 });
 
-// Non-scored question (survey/poll) → clear status since bot won't act
 window.addEventListener('kahootNonScoredQuestion', (event) => {
-  console.log(`[kAIhoot] Non-scored question (${event.detail?.type}) — clearing status`);
+  log(`Non-scored question (${event.detail?.type}) - clearing status`);
   removeStatusIndicator();
   cleanupOverlays();
 });
 
-// Detect navigation away from game screens (ranking, lobby, home)
-// Kahoot is a SPA — content scripts can't intercept pushState, so we poll
 (function watchNavigation() {
   const GAME_PATHS = ['/gameblock', '/getready', '/start'];
   let lastPath = location.pathname;
@@ -284,14 +329,13 @@ window.addEventListener('kahootNonScoredQuestion', (event) => {
     lastPath = path;
     const inGame = GAME_PATHS.some(p => path.includes(p));
     if (!inGame && statusEl) {
-      console.log(`[kAIhoot] Left game screen (${path}) — clearing status`);
+      log(`Left game screen (${path}) - clearing status`);
       removeStatusIndicator();
       cleanupOverlays();
     }
   }, 2000);
 })();
 
-// ─── Question Detection ──────────────────────────────────────────────
 window.addEventListener('kahootQuestionParsed', async (event) => {
   const q = event.detail;
   if (!q?.title) return;
@@ -303,22 +347,18 @@ window.addEventListener('kahootQuestionParsed', async (event) => {
 
   if (!isPin && !isJumble && !isSlider && !isOpenEnded && (!Array.isArray(q.choices) || q.choices.length === 0)) return;
 
-  // Hash-based dedup: skip if already sent this exact question+choices combo
   const incomingHash = questionHash({ title: q.title, choices: q.choices || [] });
   if (lastSentHash === incomingHash) {
-    console.debug('[kAIhoot] Dedup: skipping duplicate WS event for "' + q.title.slice(0, 40) + '"');
+    log('Dedup: skipping duplicate WS event for "' + q.title.slice(0, 40) + '"');
     return;
   }
 
-  // Title lock: prevent concurrent polling for the same question
   if (lastSentTitle === q.title) {
-    console.debug('[kAIhoot] Dedup: already polling for "' + q.title.slice(0, 40) + '"');
+    log('Dedup: already polling for "' + q.title.slice(0, 40) + '"');
     return;
   }
   lastSentTitle = q.title;
 
-  // Capture loading bar timing before async work.
-  // Kahoot renders the bar slightly after the WS event, so poll briefly to catch it.
   loadingEndsAt = 0;
   for (let i = 0; i < 10; i++) {
     const loadBar = document.querySelector('[data-functional-selector="loading-bar-progress"]');
@@ -327,53 +367,55 @@ window.addEventListener('kahootQuestionParsed', async (event) => {
       const dur = parseFloat(cs.getPropertyValue('--animation-duration')) || 0;
       const del = parseFloat(cs.getPropertyValue('--animation-delay')) || 0;
       if (dur + del > 0) {
-        // Buffer for intro animations (multi-select icon, double points badge)
+
         const introBuffer = 1500;
         loadingEndsAt = Date.now() + dur + del + introBuffer;
-        console.log(`[kAIhoot] Loading bar found: ${dur}+${del}+${introBuffer}ms buffer = ${dur + del + introBuffer}ms total`);
+        log(`Loading bar found: ${dur}+${del}+${introBuffer}ms buffer = ${dur + del + introBuffer}ms total`);
         break;
       }
     }
     await new Promise(r => setTimeout(r, 50));
   }
 
-  // Clean up previous question's overlays
   cleanupOverlays();
 
-  // Jumble: poll DOM for tiles
   if (isJumble) {
     const domTiles = await pollForJumbleTiles();
     if (domTiles.length > 0) {
       q.choices = domTiles;
-      console.log('[kAIhoot] Jumble tiles from DOM:', domTiles);
+      log('Jumble tiles from DOM:', domTiles);
     } else if (!q.choices?.length) {
-      console.warn('[kAIhoot] No jumble tiles found');
+      warn('No jumble tiles found');
       return;
     }
   }
 
-  // Slider: send to AI immediately with partial config (min/max come from DOM later)
-  if (isSlider && !q.sliderConfig) {
-    q.sliderConfig = { min: null, max: null, step: null, unit: '' };
+  if (isSlider) {
+    const domSliderConfig = await probeSliderConfigFast();
+    q.sliderConfig = {
+      min: q.sliderConfig?.min ?? domSliderConfig?.min ?? null,
+      max: q.sliderConfig?.max ?? domSliderConfig?.max ?? null,
+      step: q.sliderConfig?.step ?? domSliderConfig?.step ?? null,
+      unit: q.sliderConfig?.unit || domSliderConfig?.unit || ''
+    };
+    log('Slider config merged:', q.sliderConfig);
   }
 
   await refreshSettings();
 
-  // Resolve image-based choices from DOM before sending to AI
   if (!isPin && !isJumble && !isSlider && !isOpenEnded && q.choices.some(c => !c || /^Image \d+$/.test(c))) {
     const labels = await pollForImageLabels(q.choices.length);
     if (labels.length === q.choices.length && labels.some(l => l && !/^Image \d+$/i.test(l))) {
       q.choices = labels;
-      console.log('[kAIhoot] Image choices resolved:', labels);
+      log('Image choices resolved:', labels);
     } else {
-      console.log('[kAIhoot] Image labels not resolved, using placeholders:', q.choices);
+      log('Image labels not resolved, using placeholders:', q.choices);
     }
   }
 
-  // Check dedup again after async polling
   const postPollHash = questionHash({ title: q.title, choices: q.choices || [] });
   if (lastSentHash === postPollHash) {
-    console.debug('[kAIhoot] Dedup: post-poll duplicate, skipping');
+    log('Dedup: post-poll duplicate, skipping');
     return;
   }
 
@@ -383,14 +425,13 @@ window.addEventListener('kahootQuestionParsed', async (event) => {
   hasRetried = false;
   pendingRetryHash = null;
 
-  try { chrome.runtime.sendMessage({ action: 'updateQuestion', question: { title: q.title, choices: q.choices || [] } }).catch(() => {}); } catch (_) {}
   sendQuestionToBackend(q);
 });
 
-// ─── Cleanup ─────────────────────────────────────────────────────────
+// Clear anything we drew for the previous question before the next one starts.
 function cleanupOverlays() {
   document.querySelectorAll('.kaihoot-pin-crosshair, .kaihoot-jumble-badge, .kaihoot-checkmark').forEach(el => el.remove());
-  for (const el of findAnswerElements()) {
+  for (const el of domAdapter.findAnswerElements()) {
     el.style.border = '';
     el.style.boxShadow = '';
     el.style.borderRadius = '';
@@ -398,26 +439,24 @@ function cleanupOverlays() {
   }
 }
 
-// ─── DOM Polling Helpers ─────────────────────────────────────────────
-
+// Image answers usually show up later than text answers, so poll a bit before giving up.
 function pollForImageLabels(expectedCount, attempt = 0) {
-  // Image-based answer buttons take much longer to render than text ones.
-  // 40 attempts × 250ms = 10 seconds max wait.
+
   return new Promise(resolve => {
     const tryExtract = () => {
-      const elements = findAnswerElements();
+      const elements = domAdapter.findAnswerElements();
       if (elements.length >= expectedCount) {
-        const labels = elements.slice(0, expectedCount).map(el => cleanButtonText(el));
+        const labels = elements.slice(0, expectedCount).map(el => domAdapter.cleanButtonText(el));
         const hasReal = labels.some(l => l.length > 0 && !/^image\s*\d+$/i.test(l));
         if (hasReal) { resolve(labels); return; }
       }
       if (attempt < 40) {
         setTimeout(() => pollForImageLabels(expectedCount, attempt + 1).then(resolve), 250);
       } else {
-        // Last resort: return whatever we have
-        const els = findAnswerElements();
+
+        const els = domAdapter.findAnswerElements();
         resolve(els.length > 0
-          ? els.slice(0, expectedCount).map(el => cleanButtonText(el))
+          ? els.slice(0, expectedCount).map(el => domAdapter.cleanButtonText(el))
           : Array.from({ length: expectedCount }, (_, i) => `Image ${i + 1}`)
         );
       }
@@ -426,6 +465,36 @@ function pollForImageLabels(expectedCount, attempt = 0) {
   });
 }
 
+// WS slider data is not always complete. Read the DOM when it is already there.
+function readSliderConfigFromDOM() {
+  const input = document.querySelector('input[data-functional-selector="slider-scale"]');
+  if (!input) return null;
+
+  const rawMin = parseFloat(input.min);
+  const rawMax = parseFloat(input.max);
+  const rawStep = parseFloat(input.step);
+  return {
+    min: Number.isFinite(rawMin) ? rawMin : null,
+    max: Number.isFinite(rawMax) ? rawMax : null,
+    step: Number.isFinite(rawStep) ? rawStep : null,
+    unit: input.getAttribute('aria-label') || ''
+  };
+}
+
+// Keep this probe short. Speed matters more than perfect slider metadata.
+async function probeSliderConfigFast() {
+  const immediate = readSliderConfigFromDOM();
+  if (immediate) return immediate;
+
+  await new Promise(resolve => setTimeout(resolve, 40));
+  const retry1 = readSliderConfigFromDOM();
+  if (retry1) return retry1;
+
+  await new Promise(resolve => setTimeout(resolve, 60));
+  return readSliderConfigFromDOM();
+}
+
+// Jumble tiles can lag behind the question event, especially on slower devices.
 function pollForJumbleTiles(attempt = 0) {
   return new Promise(resolve => {
     const tryExtract = () => {
@@ -461,7 +530,7 @@ function pollForJumbleTextEls(attempt = 0) {
         i++;
       }
       if (els.length > 0) {
-        console.log(`[kAIhoot] Found ${els.length} jumble text elements after ${attempt} polls`);
+        log(`Found ${els.length} jumble text elements after ${attempt} polls`);
         resolve(els);
       } else if (attempt < 20) {
         setTimeout(() => pollForJumbleTextEls(attempt + 1).then(resolve), 150);
@@ -473,84 +542,21 @@ function pollForJumbleTextEls(attempt = 0) {
   });
 }
 
-// ─── Answer Element Finding ──────────────────────────────────────────
-
-const ANSWER_SELECTORS = [
-  'button[data-functional-selector^="answer-"]',
-  '[data-functional-selector="answer-option"]',
-  '.answer-option',
-  '[data-functional-selector="answer"]',
-  '.answer',
-  '[data-functional-selector="answer-button"]',
-  '.answer-button',
-  'button[data-functional-selector*="answer"]',
-  'button[class*="answer"]',
-  'button[class*="choice__Choice"]',
-];
-
-function findAnswerElements() {
-  for (const sel of ANSWER_SELECTORS) {
-    const els = document.querySelectorAll(sel);
-    if (els.length > 0) return Array.from(els);
-  }
-  return [];
-}
-
-// ─── Text Cleaning & Matching ────────────────────────────────────────
-
-function cleanButtonText(el) {
-  if (!el) return '';
-  const img = el.querySelector('img[aria-label]');
-  if (img) {
-    const label = img.getAttribute('aria-label')?.trim();
-    if (label) return label.toLowerCase();
-  }
-  // Clone and strip injected elements to avoid reading checkmarks
-  const clone = el.cloneNode(true);
-  clone.querySelectorAll('.kaihoot-checkmark').forEach(c => c.remove());
-  let text = clone.textContent.toLowerCase().trim().replace(/icon/gi, '').replace(/\s+/g, ' ').trim();
-  // Deduplicate repeated text (Kahoot sometimes renders label twice in DOM)
-  for (const divisor of [3, 2]) {
-    if (text.length >= divisor * 2) {
-      const chunk = text.length / divisor;
-      if (Number.isInteger(chunk)) {
-        const part = text.substring(0, chunk);
-        if (part.repeat(divisor) === text) { text = part; break; }
-      }
-    }
-  }
-  return text;
-}
-
-function matchScore(buttonText, answer) {
-  const a = buttonText.toLowerCase().trim();
-  const b = answer.toLowerCase().trim();
-  if (a === b) return 100;
-  if (a.includes(b) && b.length > 2) return 85;
-  if (b.includes(a) && a.length > 2) return 70;
-  const wordsA = a.split(/\s+/), wordsB = b.split(/\s+/);
-  const overlap = wordsA.filter(w => wordsB.some(wb => wb.includes(w) || w.includes(wb))).length;
-  const maxLen = Math.max(wordsA.length, wordsB.length);
-  if (maxLen === 0) return 0;
-  return Math.round((overlap / maxLen) * 100);
-}
-
-// ─── Highlight & Click ──────────────────────────────────────────────
-
+// This is the main answer path for quiz and multi-select questions.
 async function highlightAnswers(answers, isMultiSelect, options) {
-  // Poll for answer buttons immediately — click the instant they appear.
-  // Timeout: max(remaining loading time + 8s safety, 12s)
+  const myNonce = submitNonce;
   const remaining = (loadingEndsAt > 0) ? Math.max(loadingEndsAt - Date.now(), 0) : 0;
   const maxWait = Math.max(remaining + 8000, 12000);
   const start = Date.now();
-  const interval = 150; // fast polling
+  const interval = 150;
 
   if (remaining > 0) {
-    console.log(`[kAIhoot] Loading bar: ${remaining}ms remaining, polling until buttons appear`);
+    log(`Loading bar: ${remaining}ms remaining, polling until buttons appear`);
   }
 
   while (Date.now() - start < maxWait) {
-    const elements = findAnswerElements();
+    if (submitNonce !== myNonce) return;
+    const elements = domAdapter.findAnswerElements();
     if (elements.length > 0) {
       applyHighlights(elements, answers, isMultiSelect, options);
       return;
@@ -560,57 +566,53 @@ async function highlightAnswers(answers, isMultiSelect, options) {
   updateStatus('No answer buttons found');
 }
 
+// Match the model output against the live buttons, then decide whether auto-click is safe.
 function applyHighlights(elements, answers, isMultiSelect, options) {
   const matchedElements = [];
 
-  console.log('[kAIhoot] Button texts:', elements.map(el => cleanButtonText(el)));
+  log('Button texts:', elements.map(el => domAdapter.cleanButtonText(el)));
 
   for (const answer of answers) {
-    let bestEl = null, bestScore = 0, indexFallback = null;
+    let bestEl = null, bestScore = 0, secondBestScore = 0, indexFallback = null;
 
-    // "Image N" — direct index match
     const imageMatch = answer.match(/^Image\s*(\d+)$/i);
     if (imageMatch) {
       const idx = parseInt(imageMatch[1]) - 1;
       if (idx >= 0 && idx < elements.length && !matchedElements.some(m => m.el === elements[idx])) {
-        matchedElements.push({ el: elements[idx], answer, score: 100 });
+        matchedElements.push({ el: elements[idx], answer, score: 100, autoClickSafe: true });
         continue;
       }
     }
 
-    // "Answer N" / bare number fallback
     const numMatch = answer.match(/^(?:Answer|Option|Choice)?\s*(\d+)$/i);
     if (numMatch) {
       const idx = parseInt(numMatch[1]) - 1;
       if (idx >= 0 && idx < elements.length) indexFallback = elements[idx];
     }
 
-    // Text matching
     for (const el of elements) {
       if (matchedElements.some(m => m.el === el)) continue;
-      const text = cleanButtonText(el);
-      const score = matchScore(text, answer);
-      if (score === 100) { bestEl = el; bestScore = 100; break; }
-      if (score > bestScore) { bestScore = score; bestEl = el; }
+      const text = domAdapter.cleanButtonText(el);
+      const score = matching.matchScore(text, answer);
+      if (score === 100) { bestEl = el; bestScore = 100; secondBestScore = 0; break; }
+      if (score > bestScore) { secondBestScore = bestScore; bestScore = score; bestEl = el; }
+      else if (score > secondBestScore) { secondBestScore = score; }
     }
 
     if (bestEl && bestScore >= 55) {
-      console.log(`[kAIhoot] Matched "${answer}" → "${cleanButtonText(bestEl)}" (score=${bestScore})`);
-      matchedElements.push({ el: bestEl, answer, score: bestScore });
-    } else if (bestEl && bestScore >= 45 && !isMultiSelect && matchedElements.length === 0) {
-      console.log(`[kAIhoot] Weak match "${answer}" → "${cleanButtonText(bestEl)}" (score=${bestScore})`);
-      matchedElements.push({ el: bestEl, answer, score: bestScore });
+      const autoClickSafe = bestScore >= 85 && (bestScore - secondBestScore >= 8 || bestScore === 100);
+      log(`Matched "${answer}" → "${domAdapter.cleanButtonText(bestEl)}" (score=${bestScore}, second=${secondBestScore}, autoClickSafe=${autoClickSafe})`);
+      matchedElements.push({ el: bestEl, answer, score: bestScore, autoClickSafe });
     } else if (indexFallback && !matchedElements.some(m => m.el === indexFallback)) {
-      console.log(`[kAIhoot] Index fallback for "${answer}"`);
-      matchedElements.push({ el: indexFallback, answer, score: 50 });
+      log(`Index fallback for "${answer}"`);
+      matchedElements.push({ el: indexFallback, answer, score: 50, autoClickSafe: false });
     } else {
-      console.warn(`[kAIhoot] No match for "${answer}" (best score: ${bestScore})`);
+      warn(`No match for "${answer}" (best score: ${bestScore})`);
     }
   }
 
   if (matchedElements.length === 0) { updateStatus('Could not match answers'); return; }
 
-  // Apply visual highlights + checkmarks
   if (options.highlight !== false && !options.silentMode) {
     for (const { el } of matchedElements) {
       el.style.border = '3px solid #00c853';
@@ -623,7 +625,6 @@ function applyHighlights(elements, answers, isMultiSelect, options) {
         { transform: 'scale(1)', boxShadow: '0 0 12px 3px rgba(0,200,83,.5)' }
       ], { duration: 800, iterations: 3 });
 
-      // For image-based answers, use a large floating badge overlay
       const hasImage = el.querySelector('img[data-functional-selector="image-answer"]');
       if (hasImage) {
         if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
@@ -647,9 +648,11 @@ function applyHighlights(elements, answers, isMultiSelect, options) {
     }
   }
 
-  // Auto-click
   if (options.autoClick !== false) {
     const matchedIndices = matchedElements.map(m => elements.indexOf(m.el)).filter(i => i >= 0);
+    if (matchedElements.some(m => !m.autoClickSafe)) {
+      warn('Auto-clicking despite at least one ambiguous match');
+    }
     if (isMultiSelect && matchedIndices.length > 0) {
       waitForClickable(matchedElements[0].el, () => fireMultiClick(matchedIndices, elements), options);
     } else if (matchedIndices.length > 0) {
@@ -658,8 +661,7 @@ function applyHighlights(elements, answers, isMultiSelect, options) {
   }
 }
 
-// ─── Click Execution ────────────────────────────────────────────────
-
+// Buttons can render before they are really clickable, so wait for the disabled state to clear.
 function waitForClickable(element, callback, options, retries = 15) {
   if (!element) return;
   if (!element.disabled && element.offsetParent !== null) {
@@ -677,6 +679,7 @@ function waitForClickable(element, callback, options, retries = 15) {
   }
 }
 
+// Submit over WebSocket first, then mirror the click in the DOM so the UI stays in sync.
 function fireClick(index) {
   window.dispatchEvent(new CustomEvent('autoClickAnswer', { detail: index }));
   const shortA = currentAnswer?.length > 60 ? currentAnswer.slice(0, 57) + '...' : currentAnswer;
@@ -684,53 +687,36 @@ function fireClick(index) {
 }
 
 function fireMultiClick(indices, allElements) {
-  // Send via WS (primary submission path)
+
   window.dispatchEvent(new CustomEvent('autoClickMultiSelect', { detail: indices }));
-  // DOM clicks to sync React state / UI selection visuals
+
   for (const idx of indices) {
     if (allElements[idx]) {
       try { allElements[idx].click(); } catch (_) {}
     }
   }
-  // Submit button as fallback — some Kahoot versions need it
+
   setTimeout(() => clickSubmitButton('multi-select'), 600);
   const shortA = currentAnswer?.length > 60 ? currentAnswer.slice(0, 57) + '...' : currentAnswer;
   updateStatus('Answered ✅', shortA);
 }
 
-// ─── Unified Submit Button Finder ────────────────────────────────────
-
+// Submit button behavior changes between Kahoot layouts, so keep the fallback finder broad.
 function clickSubmitButton(context = 'generic', attempt = 0, nonce = submitNonce) {
   if (nonce !== submitNonce) return;
 
-  const SELECTORS = [
-    'button[data-functional-selector="submit-button"]',
-    'button[data-functional-selector="multi-select-submit-button"]',
-    'button[data-functional-selector="multi-select-submit"]',
-    'button[data-functional-selector="pin-answer-submit"]',
-    'button[data-functional-selector="jumble-submit-button"]',
-    'button[data-functional-selector="slider-submit"]',
-    'button[data-functional-selector="text-answer-submit"]',
-    'button[data-functional-selector*="submit"]',
-    'button[data-functional-selector="confirm"]',
-    'button[type="submit"]',
-  ];
-
-  for (const sel of SELECTORS) {
-    const btn = document.querySelector(sel);
-    if (btn && !btn.disabled && btn.offsetParent !== null) {
-      console.log(`[kAIhoot] Clicking ${context} submit via: ${sel}`);
-      btn.click();
-      updateStatus('Answered ✅', currentAnswer?.length > 60 ? currentAnswer.slice(0, 57) + '...' : currentAnswer);
-      return;
-    }
+  const { element: btn, selector } = domAdapter.findSubmitButton();
+  if (btn && !btn.disabled) {
+    log(`Clicking ${context} submit via: ${selector}`);
+    btn.click();
+    updateStatus('Answered ✅', currentAnswer?.length > 60 ? currentAnswer.slice(0, 57) + '...' : currentAnswer);
+    return;
   }
 
-  // Text-based fallback
   for (const btn of document.querySelectorAll('button')) {
     const text = btn.textContent.trim().toLowerCase();
     if (['submit', 'confirm', 'done', 'check'].includes(text) && !btn.disabled && btn.offsetParent !== null) {
-      console.log(`[kAIhoot] Clicking ${context} submit via text: "${text}"`);
+      log(`Clicking ${context} submit via text: "${text}"`);
       btn.click();
       updateStatus('Answered ✅', currentAnswer?.length > 60 ? currentAnswer.slice(0, 57) + '...' : currentAnswer);
       return;
@@ -740,15 +726,14 @@ function clickSubmitButton(context = 'generic', attempt = 0, nonce = submitNonce
   if (attempt < 12) {
     setTimeout(() => clickSubmitButton(context, attempt + 1, nonce), 400);
   } else {
-    console.log(`[kAIhoot] No ${context} submit button found after 12 attempts (WS likely already submitted)`);
+    log(`No ${context} submit button found after 12 attempts (WS likely already submitted)`);
     updateStatus('Answered ✅', currentAnswer?.length > 60 ? currentAnswer.slice(0, 57) + '...' : currentAnswer);
   }
 }
 
-// ─── Timer Overlay ───────────────────────────────────────────────────
-
 function removeTimerOverlay() { document.getElementById('kaihoot-timer')?.remove(); }
 
+// Optional countdown overlay for delayed answers.
 function showTimerOverlay(duration, callback) {
   removeTimerOverlay();
   if (!document.getElementById('kaihoot-timer-css')) {
@@ -765,7 +750,7 @@ function showTimerOverlay(duration, callback) {
   overlay.id = 'kaihoot-timer';
   overlay.style.cssText = `
     position:fixed; top:20px; right:20px;
-    background:linear-gradient(135deg,rgba(138,43,226,.92),rgba(218,112,214,.92));
+    background:linear-gradient(135deg,rgba(5,150,105,.92),rgba(52,211,153,.92));
     color:#fff; padding:14px 18px; border-radius:12px;
     z-index:10001; font:600 14px/1.3 system-ui,sans-serif;
     box-shadow:0 6px 20px rgba(0,0,0,.35); min-width:180px;
@@ -804,27 +789,38 @@ function slideOutAndRemove(el, afterRemove) {
   setTimeout(() => { el.remove(); afterRemove?.(); }, 260);
 }
 
-// ─── Pin Question Support ────────────────────────────────────────────
-
+// Pin questions sometimes hide the image URL in different places. This helper keeps that lookup in one spot.
 function extractPinImageUrl() {
   const svgEl = document.querySelector('[data-functional-selector="pin-input-svg"]');
   if (svgEl) {
     const imgEl = svgEl.querySelector('image[href], image[xlink\\:href]');
     if (imgEl) {
       const url = imgEl.getAttribute('href') || imgEl.getAttribute('xlink:href');
-      if (url) return url;
+      if (url) { log('Pin image from SVG:', url.slice(0, 80)); return url; }
     }
   }
   const scaledImg = document.querySelector('[data-functional-selector="media-container__media-image"]');
   if (scaledImg) {
     const url = scaledImg.getAttribute('href') || scaledImg.getAttribute('src');
-    if (url) return url;
+    if (url) { log('Pin image from media-container:', url.slice(0, 80)); return url; }
+  }
+  log('Pin image: no image found in DOM');
+  return null;
+}
+
+// Extract the question's media image URL from the DOM (non-pin questions).
+function extractQuestionImageUrl() {
+  const img = document.querySelector('img[data-functional-selector="media-container__media-image"]');
+  if (img) {
+    const url = img.getAttribute('src');
+    if (url) { log('Question image from DOM:', url.slice(0, 80)); return url; }
   }
   return null;
 }
 
+// For Pin, the content script only draws the suggestion and hands the actual placement to injected.js.
 async function placePinOnSvg(coords, options = {}) {
-  // Poll aggressively for SVG — don't wait for full loading timer
+
   const deadline = (loadingEndsAt > 0 ? loadingEndsAt : Date.now()) + 5000;
   let svgEl = null;
 
@@ -835,27 +831,25 @@ async function placePinOnSvg(coords, options = {}) {
       const isVisible = rect.width > 50 && rect.height > 50;
       const noLoadingOverlay = !document.querySelector('[data-functional-selector="loading-bar-progress"]');
       if (isVisible && noLoadingOverlay) {
-        // Tiny settle for CSS transitions
+
         await new Promise(r => setTimeout(r, 100));
-        console.log(`[kAIhoot] Pin: SVG visible, overlay clear (attempt ${attempt}, ${Date.now()})`);
+        log(`Pin: SVG visible, overlay clear (attempt ${attempt}, ${Date.now()})`);
         break;
       }
     }
     svgEl = null;
     if (Date.now() > deadline) break;
-    await new Promise(r => setTimeout(r, 100)); // 100ms polls (fast)
+    await new Promise(r => setTimeout(r, 100));
   }
 
   if (!svgEl) {
     svgEl = document.querySelector('[data-functional-selector="pin-input-svg"]');
     if (!svgEl) { updateStatus('Pin SVG not found'); return; }
-    console.warn('[kAIhoot] Pin: proceeding despite overlay check');
+    warn('Pin: proceeding despite overlay check');
   }
 
-  console.log(`[kAIhoot] Pin: placing at ${coords.x.toFixed(1)}%, ${coords.y.toFixed(1)}%`);
+  log(`Pin: placing at ${coords.x.toFixed(1)}%, ${coords.y.toFixed(1)}%`);
 
-  // Dispatch to injected.js for coordinate conversion + React state + WS submission
-  // No submit button click needed — WS is the authoritative answer path
   const doPlace = () => {
     window.dispatchEvent(new CustomEvent('autoPinAnswer', { detail: { x: coords.x, y: coords.y } }));
   };
@@ -869,24 +863,29 @@ async function placePinOnSvg(coords, options = {}) {
       doPlace();
     }
   } else {
-    if (options.highlight !== false) showPinCrosshair(svgEl, coords);
+    if (options.highlight !== false && !options.silentMode) showPinCrosshair(svgEl, coords);
     updateStatus('Pin here 📍', `${coords.x.toFixed(1)}%, ${coords.y.toFixed(1)}%`);
   }
 }
 
-// ─── Pin Crosshair ──────────────────────────────────────────────────
-
+// Draw a lightweight crosshair so suggest-only mode still feels useful.
 function showPinCrosshair(svgEl, coords) {
   document.querySelectorAll('.kaihoot-pin-crosshair').forEach(el => el.remove());
 
-  const imgEl = svgEl.querySelector('image[href], image[xlink\\:href]') || svgEl.querySelector('image');
-  const imgX = parseFloat(imgEl?.getAttribute('x') || '0');
-  const imgY = parseFloat(imgEl?.getAttribute('y') || '0');
-  const imgWidth = parseFloat(imgEl?.getAttribute('width') || '0');
-  const imgHeight = parseFloat(imgEl?.getAttribute('height') || '0');
-  const viewBox = svgEl.getAttribute('viewBox');
-  let vbWidth = imgWidth, vbHeight = imgHeight;
-  if (viewBox) { const vb = viewBox.trim().split(/[\s,]+/).map(Number); vbWidth = vb[2] || imgWidth; vbHeight = vb[3] || imgHeight; }
+  const imgEl = svgEl.querySelector('[data-functional-selector="media-container__media-image"]')
+    || svgEl.querySelector('image[href], image[xlink\\:href]')
+    || svgEl.querySelector('image');
+  const viewBox = String(svgEl.getAttribute('viewBox') || '').trim();
+  const vb = viewBox ? viewBox.split(/[\s,]+/).map(Number) : [0, 0, 0, 0];
+  const hasViewBox = vb.length === 4 && vb.every(Number.isFinite);
+  const imgX = parseFloat(imgEl?.getAttribute('x') || String((hasViewBox ? vb[0] : 0) || 0));
+  const imgY = parseFloat(imgEl?.getAttribute('y') || String((hasViewBox ? vb[1] : 0) || 0));
+  const imgWidth = parseFloat(imgEl?.getAttribute('width') || String((hasViewBox ? vb[2] : 0) || 0));
+  const imgHeight = parseFloat(imgEl?.getAttribute('height') || String((hasViewBox ? vb[3] : 0) || 0));
+  const vbX = hasViewBox ? vb[0] : imgX;
+  const vbY = hasViewBox ? vb[1] : imgY;
+  const vbWidth = (hasViewBox ? vb[2] : imgWidth) || 1;
+  const vbHeight = (hasViewBox ? vb[3] : imgHeight) || 1;
 
   const svgTargetX = imgX + (coords.x / 100) * (imgWidth || vbWidth);
   const svgTargetY = imgY + (coords.y / 100) * (imgHeight || vbHeight);
@@ -900,9 +899,8 @@ function showPinCrosshair(svgEl, coords) {
     screenX = sp.x; screenY = sp.y;
   } else {
     const rect = svgEl.getBoundingClientRect();
-    const vb = viewBox ? viewBox.trim().split(/[\s,]+/).map(Number) : [0, 0, rect.width, rect.height];
-    screenX = rect.left + ((svgTargetX - vb[0]) / vb[2]) * rect.width;
-    screenY = rect.top + ((svgTargetY - vb[1]) / vb[3]) * rect.height;
+    screenX = rect.left + ((svgTargetX - vbX) / vbWidth) * rect.width;
+    screenY = rect.top + ((svgTargetY - vbY) / vbHeight) * rect.height;
   }
 
   const crosshair = document.createElement('div');
@@ -955,19 +953,17 @@ function showPinCrosshair(svgEl, coords) {
   setTimeout(() => { if (crosshair.isConnected) { crosshair.remove(); cancelAnimationFrame(rafId); observer.disconnect(); } }, 60000);
 }
 
-// ─── Jumble Solver ──────────────────────────────────────────────────
-
+// Jumble is handled in the page context when possible, with a DOM fallback here if needed.
 async function solveJumbleFromDOM(answerWord, options) {
-  // Wait for loading bar to finish — arranger container doesn't exist during loading
+
   if (loadingEndsAt > 0) {
     const remaining = loadingEndsAt - Date.now();
     if (remaining > 0) {
-      console.log(`[kAIhoot] Jumble: waiting ${remaining}ms for loading to finish`);
+      log(`Jumble: waiting ${remaining}ms for loading to finish`);
       await new Promise(r => setTimeout(r, remaining));
     }
   }
 
-  // Poll for arranger container to confirm interactive screen is ready
   for (let i = 0; i < 30; i++) {
     if (document.querySelector('[class*="arranger__Container"]')) break;
     await new Promise(r => setTimeout(r, 200));
@@ -983,24 +979,23 @@ async function solveJumbleFromDOM(answerWord, options) {
   window.removeEventListener('kaihootJumbleHandled', onHandled);
 
   if (injectedHandled) {
-    console.log('[kAIhoot] Jumble handled by injected.js (React state)');
+    log('Jumble handled by injected.js (React state)');
     updateStatus('Answered ✅ (jumble)', answerWord);
     return;
   }
 
-  console.log('[kAIhoot] Injected.js did not handle jumble, trying DOM clicks');
+  log('Injected.js did not handle jumble, trying DOM clicks');
 
   const textEls = await pollForJumbleTextEls();
   if (textEls.length === 0) { updateStatus('Jumble tiles not found'); return; }
 
   const labels = textEls.map(el => el.textContent?.trim() || '');
-  console.log('[kAIhoot] Jumble tile labels:', labels);
+  log('Jumble tile labels:', labels);
 
-  const order = computeTileOrder(answerWord, labels);
+  const order = matching.computeTileOrder(answerWord, labels);
   if (!order) { updateStatus(`Can't map answer to tiles`); return; }
-  console.log(`[kAIhoot] Tile order: [${order}] → "${order.map(i => labels[i]).join('')}"`);
+  log(`Tile order: [${order}] → "${order.map(i => labels[i]).join('')}"`);
 
-  // Show badges
   if (options.highlight !== false && !options.silentMode) showJumbleBadges(textEls, order);
 
   if (options.autoClick === false) {
@@ -1023,14 +1018,11 @@ async function solveJumbleFromDOM(answerWord, options) {
   }
 }
 
-// ─── Open-Ended (Type Answer) Support ────────────────────────────────
-
+// Open-ended answers need to wait for the input to exist, but not for the whole intro animation.
 async function dispatchOpenEndedAnswer(answer, options = {}) {
   const myNonce = submitNonce;
   const { autoClick = true, answerDelay = 0 } = options;
 
-  // Poll aggressively for text input — don't wait for loading bar
-  // (same pattern as pin/slider: input may appear before loading animation ends)
   const deadline = (loadingEndsAt > 0 ? loadingEndsAt : Date.now()) + 5000;
   let inputReady = false;
 
@@ -1039,7 +1031,7 @@ async function dispatchOpenEndedAnswer(answer, options = {}) {
     if (input && !input.disabled) {
       const noOverlay = !document.querySelector('[data-functional-selector="loading-bar-progress"]');
       if (noOverlay) {
-        console.log(`[kAIhoot] Open-ended: input found, overlay clear (attempt ${attempt})`);
+        log(`Open-ended: input found, overlay clear (attempt ${attempt})`);
         inputReady = true;
         break;
       }
@@ -1050,46 +1042,40 @@ async function dispatchOpenEndedAnswer(answer, options = {}) {
   }
 
   if (!inputReady) {
-    // Fallback: try anyway if input exists
+
     const input = document.querySelector('input[data-functional-selector="text-answer-input"]');
     if (!input) { updateStatus('✏️ Input not found'); return; }
-    console.warn('[kAIhoot] Open-ended: proceeding despite overlay check');
+    warn('Open-ended: proceeding despite overlay check');
   }
 
   if (submitNonce !== myNonce) return;
 
-  // Apply answer delay (stored in seconds)
   if (answerDelay > 0) {
-    console.log(`[kAIhoot] Open-ended: waiting ${answerDelay}s delay`);
+    log(`Open-ended: waiting ${answerDelay}s delay`);
     await new Promise(r => setTimeout(r, answerDelay * 1000));
     if (submitNonce !== myNonce) return;
   }
 
-  // Dispatch to injected.js which handles React value setting + WS submission
   window.dispatchEvent(new CustomEvent('autoTypeAnswer', {
     detail: { answer, autoClick }
   }));
-  console.log(`[kAIhoot] Open-ended: dispatched "${answer}" to injected.js`);
+  log(`Open-ended: dispatched "${answer}" to injected.js`);
   updateStatus('Answered ✅ (open-ended)', `✏️ ${answer}`);
 }
 
-// ─── Slider Support ─────────────────────────────────────────────────
-
+// Slider answers are sent early, then mirrored into the UI once the control is ready.
 async function solveSliderFromDOM(value, options) {
   const myNonce = submitNonce;
 
-  // Send WS immediately — don't wait for UI to be interactive
-  // Snap the value using config we already have from DOM polling
   const earlyInput = document.querySelector('input[data-functional-selector="slider-scale"]');
   if (earlyInput && options.autoClick !== false) {
     const rawMin = parseFloat(earlyInput.min), rawMax = parseFloat(earlyInput.max), rawStep = parseFloat(earlyInput.step);
     const min = isNaN(rawMin) ? 0 : rawMin, max = isNaN(rawMax) ? 100 : rawMax, step = isNaN(rawStep) ? 1 : rawStep;
     const snapped = Math.max(min, Math.min(max, min + Math.round((value - min) / step) * step));
     window.dispatchEvent(new CustomEvent('sliderWSSend', { detail: { value: snapped } }));
-    console.log(`[kAIhoot] Slider: early WS sent with snapped value ${snapped}`);
+    log(`Slider: early WS sent with snapped value ${snapped}`);
   }
 
-  // Now poll for UI to become interactive (for visual feedback + submit click)
   const deadline = (loadingEndsAt > 0 ? loadingEndsAt : Date.now()) + 5000;
   let rangeInput = null;
 
@@ -1099,7 +1085,7 @@ async function solveSliderFromDOM(value, options) {
       const noLoadingOverlay = !document.querySelector('[data-functional-selector="loading-bar-progress"]');
       if (noLoadingOverlay) {
         await new Promise(r => setTimeout(r, 100));
-        console.log(`[kAIhoot] Slider: range input found, overlay clear (attempt ${attempt})`);
+        log(`Slider: range input found, overlay clear (attempt ${attempt})`);
         break;
       }
     }
@@ -1110,13 +1096,12 @@ async function solveSliderFromDOM(value, options) {
   }
 
   if (!rangeInput) {
-    // Fallback: try anyway
+
     rangeInput = document.querySelector('input[data-functional-selector="slider-scale"]');
     if (!rangeInput) { updateStatus('🎚️ Slider not found'); return; }
-    console.warn('[kAIhoot] Slider: proceeding despite overlay check');
+    warn('Slider: proceeding despite overlay check');
   }
 
-  // Extract config from DOM for logging / highlight
   const rawMin = parseFloat(rangeInput.min);
   const rawMax = parseFloat(rangeInput.max);
   const rawStep = parseFloat(rangeInput.step);
@@ -1124,9 +1109,8 @@ async function solveSliderFromDOM(value, options) {
   const max = isNaN(rawMax) ? 100 : rawMax;
   const step = isNaN(rawStep) ? 1 : rawStep;
   const unit = rangeInput.getAttribute('aria-label') || '';
-  console.log(`[kAIhoot] Slider: value=${value}, range=${min}-${max}, step=${step}, unit="${unit}"`);
+  log(`Slider: value=${value}, range=${min}-${max}, step=${step}, unit="${unit}"`);
 
-  // Highlight the closest marker if highlight is on
   if (options.highlight !== false && !options.silentMode) {
     highlightSliderMarker(value);
   }
@@ -1137,7 +1121,7 @@ async function solveSliderFromDOM(value, options) {
   }
 
   const doSlider = () => {
-    // WS already sent early — this just sets visual value + clicks submit
+
     window.dispatchEvent(new CustomEvent('autoSliderAnswer', {
       detail: { value, autoClick: true, skipWS: true }
     }));
@@ -1153,8 +1137,9 @@ async function solveSliderFromDOM(value, options) {
   }
 }
 
+// Mark the closest visible slider tick so suggest-only mode has something concrete to show.
 function highlightSliderMarker(targetValue) {
-  // Find the marker closest to the target value
+
   const markers = document.querySelectorAll('.spectrum__MarkerContainer-sc-1q4py3v-1, [data-functional-selector*="marker-container"]');
   let bestMarker = null, bestDiff = Infinity;
 
@@ -1179,44 +1164,10 @@ function highlightSliderMarker(targetValue) {
   }
 }
 
-// ─── Jumble Helpers ─────────────────────────────────────────────────
-
-function computeTileOrder(answer, tiles) {
-  const answerLower = answer.toLowerCase().replace(/[\s\-]/g, '');
-  const tilesLower = tiles.map(t => t.toLowerCase().replace(/[\s\-]/g, ''));
-  const used = new Set(), order = [];
-  let pos = 0;
-
-  while (pos < answerLower.length && order.length < tiles.length) {
-    let found = false;
-    const candidates = tilesLower.map((t, i) => ({ text: t, idx: i, len: t.length }))
-      .filter(c => !used.has(c.idx)).sort((a, b) => b.len - a.len);
-    for (const c of candidates) {
-      if (answerLower.startsWith(c.text, pos)) {
-        order.push(c.idx); used.add(c.idx); pos += c.text.length; found = true; break;
-      }
-    }
-    if (!found) break;
-  }
-  if (order.length === tiles.length && pos === answerLower.length) return order;
-
-  if (tiles.length > 8) return null;
-  function permute(remaining, current) {
-    if (remaining.length === 0) return current.map(i => tilesLower[i]).join('') === answerLower ? current : null;
-    for (let j = 0; j < remaining.length; j++) {
-      const next = [...current, remaining[j]];
-      if (!answerLower.startsWith(next.map(i => tilesLower[i]).join(''))) continue;
-      const result = permute([...remaining.slice(0, j), ...remaining.slice(j + 1)], next);
-      if (result) return result;
-    }
-    return null;
-  }
-  return permute(tilesLower.map((_, i) => i), []);
-}
-
+// Click the jumble tiles in sequence when we have to fall back to DOM interaction.
 function clickJumbleTilesSequence(textEls, order, onComplete, idx = 0) {
   if (idx >= order.length) {
-    console.log('[kAIhoot] All jumble tiles clicked');
+    log('All jumble tiles clicked');
     if (onComplete) onComplete();
     return;
   }
@@ -1234,7 +1185,7 @@ function clickJumbleTilesSequence(textEls, order, onComplete, idx = 0) {
   if (!currentTextEl) {
     currentTextEl = textEls[order[idx]];
     if (!currentTextEl?.isConnected) {
-      console.warn(`[kAIhoot] Tile "${targetLabel}" gone, skipping`);
+      warn(`Tile "${targetLabel}" gone, skipping`);
       clickJumbleTilesSequence(textEls, order, onComplete, idx + 1);
       return;
     }
@@ -1267,6 +1218,7 @@ function clickJumbleTilesSequence(textEls, order, onComplete, idx = 0) {
   }, 80);
 }
 
+// Number badges make the intended tile order obvious in highlight mode.
 function showJumbleBadges(textEls, order) {
   document.querySelectorAll('.kaihoot-jumble-badge').forEach(el => el.remove());
 
@@ -1307,7 +1259,7 @@ function showJumbleBadges(textEls, order) {
   observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
 }
 
-// ─── Global Styles ──────────────────────────────────────────────────
+// One style block keeps the overlays self-contained and easy to remove later.
 function injectGlobalStyles() {
   if (document.getElementById('kaihoot-global-css')) return;
   const s = document.createElement('style');
@@ -1317,3 +1269,5 @@ function injectGlobalStyles() {
   else document.addEventListener('DOMContentLoaded', () => document.head?.appendChild(s));
 }
 injectGlobalStyles();
+
+}
