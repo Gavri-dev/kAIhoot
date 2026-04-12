@@ -24,13 +24,13 @@
 ##  Table of Contents
 
 | | |
-|---|---|
-| [ What Makes This Different](#-what-makes-this-different) | [ How It Works](#️-how-it-works) |
-| [ Supported Question Types](#-supported-question-types) | [ Privacy](#-privacy) |
-| [ Installation](#️-installation) | [ API Cost](#-api-cost) |
-| [ Settings](#️-settings) | [ Troubleshooting](#-troubleshooting) |
+| --- | --- |
+| [• What Makes This Different](#-what-makes-this-different) | [• How It Works](#️-how-it-works) |
+| [• Supported Question Types](#-supported-question-types) | [• Privacy](#-privacy) |
+| [• Installation](#️-installation) | [• API Cost](#-api-cost) |
+| [• Settings](#️-settings) | [• Troubleshooting](#-troubleshooting) |
 
-##  What Makes This Different
+##  • What Makes This Different
 
 Most Kahoot tools only handle basic multiple-choice. Some need the Quiz ID beforehand. Others are paywalled or use a shared server that gets rate-limited.
 
@@ -54,7 +54,7 @@ kAIhoot works on **every** question type Kahoot offers, answers in real-time dur
 | Silent mode | ✅ | ✅ | ❌ |
 | Free & open source | ✅ | ❌ | ❌ |
 
-##  Supported Question Types
+##  • Supported Question Types
 
 **Multiple Choice & True/False** - Reads the question and all choices from the WebSocket, sends to GPT, highlights and clicks the correct answer. Handles image-based choices by reading `aria-label` attributes.
 
@@ -70,7 +70,7 @@ kAIhoot works on **every** question type Kahoot offers, answers in real-time dur
 
 **Image-Based Questions (Vision Fallback)** - When any question has an attached image containing critical content (code snippets, diagrams, equations, graphs), the text model automatically detects that it can't answer without seeing the image and retries with the vision model. Works across all question types and languages — no hardcoded keyword detection.
 
-##  Installation
+##  • Installation
 
 ### Step 1: Download the extension
 
@@ -126,7 +126,7 @@ The extension needs an OpenAI API key to work. This is what lets it talk to GPT.
 
 That's it. If you want the extension to wait before answering (so it doesn't look suspicious), drag the **Answer Delay** slider in the popup to add a few seconds of wait time.
 
-##  Settings
+##  • Settings
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -139,7 +139,7 @@ That's it. If you want the extension to wait before answering (so it doesn't loo
 | Model | `gpt-5-mini` | Dropdown with all available models, grouped by speed/intelligence |
 | Vision Model | `gpt-4.1` | Model used for pin-it and image-dependent questions |
 
-##  How It Works
+##  • How It Works
 
 When you join a Kahoot game, the extension intercepts the WebSocket connection between your browser and Kahoot's servers. Every time a new question gets sent to your client, kAIhoot grabs it before the UI even renders, sends it to OpenAI, and uses the response to answer automatically.
 
@@ -174,15 +174,15 @@ When you join a Kahoot game, the extension intercepts the WebSocket connection b
 
 Questions get sent to AI the instant they arrive via WebSocket, during the loading animation. Slider and jumble answers are submitted via WS before the UI is even interactive. Pin placement polls the SVG at 100ms intervals instead of waiting for buffers.
 
-##  Privacy
+##  • Privacy
 
 Your API key is stored locally in `chrome.storage.local` and only ever sent to OpenAI. There's no backend, no analytics, no telemetry, no data collection. The extension only requests permissions for `storage`, `kahoot.it`, and `api.openai.com`.
 
-##  API Cost
+##  • API Cost
 
 A typical 20-question game on `gpt-5-mini` costs about $0.01-0.03. Questions that use the vision model (pin-it and image-dependent questions) cost a bit more (~$0.02 each). $5 of OpenAI credit will last you a very long time.
 
-##  Troubleshooting
+##  • Troubleshooting
 
 **Extension doesn't activate / no status badge appears**
 - Make sure you're on `kahoot.it` (not `kahoot.com` or `create.kahoot.com`)
@@ -204,11 +204,11 @@ A typical 20-question game on `gpt-5-mini` costs about $0.01-0.03. Questions tha
 **"manifest.json" error when loading**
 - You probably selected the wrong folder. Make sure you pick the folder that has `manifest.json` directly inside it, not a parent folder or a subfolder
 
-##  Tested With
+##  • Tested With
 
 Standard quiz (4-choice), true/false, multi-select (2-4 correct), pin-it with world maps and custom images, jumble (3-8 tiles), slider with numeric ranges (including negative values), open-ended with character limits, image-based answer choices, and image-dependent questions (code in images, diagrams, equations). Also works with mixed-type quizzes. Surveys and polls are auto-skipped since they're non-scored.
 
-##  Credits
+##  • Credits
 
 Built by [@Gavri-dev](https://github.com/Gavri-dev). Originally based on [QuizGPT](https://github.com/im23b-busere/QuizGPT) by [@im23b-busere](https://github.com/im23b-busere) (MIT License). Extended with full question type coverage, vision AI, React DOM manipulation, WS-first submission, and a lot of speed/robustness work.
 
@@ -216,7 +216,7 @@ Built by [@Gavri-dev](https://github.com/Gavri-dev). Originally based on [QuizGP
 
 Educational and research purposes only. Demonstrates how browser extensions can interact with web applications through WebSocket interception and DOM manipulation. Not affiliated with Kahoot! or OpenAI. Use responsibly.
 
-##  License
+##  • License
 
 [MIT](LICENSE) - do whatever you want, just keep the copyright notice.
 
