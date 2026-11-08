@@ -214,7 +214,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
       updateStatus('Error ❌', request.message);
       showErrorToast(request.message);
       sendResponse({ success: true });
-      if (currentQuestion && !hasRetried && !request.message?.includes('API key')) {
+      if (currentQuestion && !hasRetried && !/API key|unavailable on your account/i.test(request.message || '')) {
         hasRetried = true;
         pendingRetryHash = questionHash(currentQuestion);
         lastSentHash = pendingRetryHash;

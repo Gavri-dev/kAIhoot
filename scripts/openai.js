@@ -15,6 +15,18 @@ const STYLE = 'color:#6ee7b7;font-weight:bold';
 const log = (...args) => console.log('%c[OpenAI]', STYLE, ...args);
 const warn = (...args) => console.warn('%c[OpenAI]', STYLE, ...args);
 
+// Recognize "model not found / no access" errors so the UI can give an
+// actionable message (and skip the pointless retry) instead of a raw API error.
+function classifyOpenAIError(prefix, status, errMsg, model) {
+  const m = String(errMsg || '').toLowerCase();
+  const modelError = status === 404 ||
+    (/\bmodel\b/.test(m) && /(does not exist|not found|do not have access|is not available|unsupported|deprecated)/.test(m));
+  if (modelError) {
+    return new Error(`Model "${model}" is unavailable on your account — open kAIhoot settings and pick another model.`);
+  }
+  return new Error(`${prefix}: ${errMsg}`);
+}
+
 async function getOpenAISettings() {
   const sync = await chrome.storage.sync.get(['openaiModel', 'openaiVisionModel']);
   const apiKey = await getApiKey();
@@ -195,7 +207,7 @@ Example: 65.0,40.0`;
     } catch {
       errMsg = `HTTP ${resp.status}`;
     }
-    throw new Error(`OpenAI Vision: ${errMsg}`);
+    throw classifyOpenAIError('OpenAI Vision', resp.status, errMsg, visionModel);
   }
 
   const data = await resp.json();
@@ -399,7 +411,7 @@ async function callOpenAI(apiKey, model, userPrompt, opts = {}) {
       } catch {
         errMsg = `HTTP ${resp.status}`;
       }
-      throw new Error(`OpenAI: ${errMsg}`);
+      throw classifyOpenAIError('OpenAI', resp.status, errMsg, model);
     } catch (err) {
       clearTimeout(timeout);
       lastError = err.name === 'AbortError' ? new Error('OpenAI request timed out') : err;
@@ -458,7 +470,7 @@ async function callVision(apiKey, visionModel, systemPrompt, textPrompt, imageUr
     let errMsg;
     try { const e = await resp.json(); errMsg = e?.error?.message || `HTTP ${resp.status}`; }
     catch { errMsg = `HTTP ${resp.status}`; }
-    throw new Error(`OpenAI Vision: ${errMsg}`);
+    throw classifyOpenAIError('OpenAI Vision', resp.status, errMsg, visionModel);
   }
 
   const data = await resp.json();
