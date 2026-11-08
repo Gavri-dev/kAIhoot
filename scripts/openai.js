@@ -1,6 +1,6 @@
 // kAIhoot - OpenAI integration
 
-import { DEFAULT_MODEL, DEFAULT_VISION_MODEL } from './core/constants.js';
+import { DEFAULT_MODEL, DEFAULT_VISION_MODEL, isReasoningModel, normalizeReasoningEffort } from './core/constants.js';
 import { parseMultiSelectResponse, parsePinCoordinates, selectBestChoice, snapSliderValue } from './core/matching.js';
 import { getApiKey } from './core/storage.js';
 
@@ -155,19 +155,19 @@ Example: 65.0,40.0`;
 
   log(`Pin question - vision model: ${visionModel}, image: ${imageUrl?.slice(0, 80)}...`);
 
-  const isGPT5Vision = /^gpt-5/i.test(visionModel.trim());
+  const visionIsReasoning = isReasoningModel(visionModel);
   const body = {
     model: visionModel,
     messages: [
-      { role: isGPT5Vision ? 'developer' : 'system', content: 'You are a spatial reasoning expert. You will be shown an image and asked to place a pin at a specific location. Look carefully at the actual image content - maps can be any projection, any crop, any style. Reason step by step from what you see, then output coordinates. Your final line must be ONLY X,Y (0-100 scale).' },
+      { role: visionIsReasoning ? 'developer' : 'system', content: 'You are a spatial reasoning expert. You will be shown an image and asked to place a pin at a specific location. Look carefully at the actual image content - maps can be any projection, any crop, any style. Reason step by step from what you see, then output coordinates. Your final line must be ONLY X,Y (0-100 scale).' },
       { role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: imageUrl, detail: 'high' } }] }
-    ],
-    temperature: 0.1
+    ]
   };
-  if (isGPT5Vision) {
+  if (visionIsReasoning) {
     body.max_completion_tokens = 800;
   } else {
     body.max_tokens = 800;
+    body.temperature = 0.1;
   }
 
   const controller = new AbortController();
@@ -344,21 +344,22 @@ async function callOpenAI(apiKey, model, userPrompt, opts = {}) {
     stop = undefined,
     reasoningEffort = 'minimal'
   } = opts;
-  const isGPT5 = /^gpt-5/i.test(model.trim());
+  const reasoning = isReasoningModel(model);
 
   const body = {
     model,
     messages: [
-      { role: isGPT5 ? 'developer' : 'system', content: systemPrompt },
+      { role: reasoning ? 'developer' : 'system', content: systemPrompt },
       { role: 'user', content: userPrompt }
     ]
   };
 
-  if (isGPT5) {
-    const reasoningPads = { minimal: 200, low: 500, medium: 1200, high: 2500 };
-    const reasoningPad = reasoningPads[reasoningEffort] ?? 500;
+  if (reasoning) {
+    const effort = normalizeReasoningEffort(model, reasoningEffort);
+    const reasoningPads = { none: 0, minimal: 200, low: 500, medium: 1200, high: 2500, xhigh: 4000, max: 6000 };
+    const reasoningPad = reasoningPads[effort] ?? 500;
     body.max_completion_tokens = maxTokens + reasoningPad;
-    body.reasoning_effort = reasoningEffort;
+    body.reasoning_effort = effort;
   } else {
     body.max_tokens = maxTokens;
     body.temperature = 0;
@@ -417,23 +418,23 @@ async function callOpenAI(apiKey, model, userPrompt, opts = {}) {
 
 async function callVision(apiKey, visionModel, systemPrompt, textPrompt, imageUrl, opts = {}) {
   const { maxTokens = 500, timeoutMs = VISION_TIMEOUT_MS } = opts;
-  const isGPT5 = /^gpt-5/i.test(visionModel.trim());
+  const visionIsReasoning = isReasoningModel(visionModel);
 
   const body = {
     model: visionModel,
     messages: [
-      { role: isGPT5 ? 'developer' : 'system', content: systemPrompt },
+      { role: visionIsReasoning ? 'developer' : 'system', content: systemPrompt },
       { role: 'user', content: [
         { type: 'text', text: textPrompt },
         { type: 'image_url', image_url: { url: imageUrl, detail: 'high' } }
       ]}
-    ],
-    temperature: 0.1
+    ]
   };
-  if (isGPT5) {
+  if (visionIsReasoning) {
     body.max_completion_tokens = maxTokens;
   } else {
     body.max_tokens = maxTokens;
+    body.temperature = 0.1;
   }
 
   const controller = new AbortController();

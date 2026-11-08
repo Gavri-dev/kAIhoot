@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { computeTileOrder, parseMultiSelectResponse, parsePinCoordinates, selectBestChoice, snapSliderValue, validateAnswerSet } from '../scripts/core/matching.js';
 import { normalizeText, fuzzyScore } from '../scripts/core/text.js';
+import { isReasoningModel, normalizeReasoningEffort } from '../scripts/core/constants.js';
 
 // These tests cover the matching behavior that tends to break when prompts,
 // selectors, or normalization rules change.
@@ -135,4 +136,47 @@ test('computeTileOrder handles permutation case', () => {
 
 test('computeTileOrder returns null when no valid order exists', () => {
   assert.equal(computeTileOrder('xyz', ['a', 'b', 'c']), null);
+});
+
+// Model capability gate (replaces the old /^gpt-5/ string check). Reasoning
+// models reject temperature; classic GPT-4.x / GPT-3.5 models require it.
+test('isReasoningModel: gpt-5/gpt-6/o-series and newer are reasoning models', () => {
+  assert.equal(isReasoningModel('gpt-6-luna'), true);
+  assert.equal(isReasoningModel('gpt-6.1-terra'), true);
+  assert.equal(isReasoningModel('gpt-6.1-sol'), true);
+  assert.equal(isReasoningModel('gpt-6-astra'), true);
+  assert.equal(isReasoningModel('gpt-5-mini'), true);
+  assert.equal(isReasoningModel('gpt-5.4'), true);
+  assert.equal(isReasoningModel('o3'), true);
+});
+
+test('isReasoningModel: gpt-4.x / gpt-4o / gpt-3.5 are classic (non-reasoning)', () => {
+  assert.equal(isReasoningModel('gpt-4.1'), false);
+  assert.equal(isReasoningModel('gpt-4.1-mini'), false);
+  assert.equal(isReasoningModel('gpt-4o'), false);
+  assert.equal(isReasoningModel('gpt-4-turbo'), false);
+  assert.equal(isReasoningModel('gpt-3.5-turbo'), false);
+});
+
+test('isReasoningModel: empty/unknown ids default to reasoning (modern behavior)', () => {
+  assert.equal(isReasoningModel(''), true);
+  assert.equal(isReasoningModel(null), true);
+  assert.equal(isReasoningModel('gpt-7-experimental'), true);
+});
+
+test('normalizeReasoningEffort: clamps minimal to low for non-gpt5 reasoning models', () => {
+  assert.equal(normalizeReasoningEffort('gpt-6-luna', 'minimal'), 'low');
+  assert.equal(normalizeReasoningEffort('gpt-6-astra', 'minimal'), 'low');
+  assert.equal(normalizeReasoningEffort('gpt-6.1-sol', 'minimal'), 'low');
+});
+
+test('normalizeReasoningEffort: keeps minimal for the gpt-5 family', () => {
+  assert.equal(normalizeReasoningEffort('gpt-5-mini', 'minimal'), 'minimal');
+  assert.equal(normalizeReasoningEffort('gpt-5', 'minimal'), 'minimal');
+});
+
+test('normalizeReasoningEffort: passes non-minimal efforts through unchanged', () => {
+  assert.equal(normalizeReasoningEffort('gpt-6-luna', 'low'), 'low');
+  assert.equal(normalizeReasoningEffort('gpt-6-astra', 'medium'), 'medium');
+  assert.equal(normalizeReasoningEffort('gpt-6.1-terra', 'high'), 'high');
 });
