@@ -27,12 +27,12 @@ let currentAnswer = null;
 let lastSentHash = null;
 let lastSentTitle = null;
 let loadingEndsAt = 0;
-let pendingRetryHash = null;
-let hasRetried = false;
 let statusEl = null;
 let activeToasts = [];
 let submitNonce = 0;
 let activeTimerHandle = null;
+let lastBackendSendAt = 0;
+const MIN_SEND_INTERVAL_MS = 1500; // real Kahoot questions never arrive faster
 
 let cachedSettings = {
   highlightOption: true,
@@ -180,8 +180,6 @@ function sendQuestionToBackend(question) {
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   switch (request.action) {
     case 'highlightAnswer': {
-      hasRetried = false;
-      pendingRetryHash = null;
       if (currentQuestion) lastSentHash = questionHash(currentQuestion);
 
       const answersFromAI = request.answers || [];
@@ -216,18 +214,10 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
       updateStatus('Error ❌', request.message);
       showErrorToast(request.message);
       sendResponse({ success: true });
-      if (currentQuestion && !hasRetried && !/API key|unavailable on your account/i.test(request.message || '')) {
-        hasRetried = true;
-        pendingRetryHash = questionHash(currentQuestion);
-        lastSentHash = pendingRetryHash;
-        updateStatus('Retrying in 2s...');
-        setTimeout(() => {
-          if (currentQuestion && pendingRetryHash === questionHash(currentQuestion)) sendQuestionToBackend(currentQuestion);
-          pendingRetryHash = null;
-        }, 2000);
-      } else {
-        lastSentHash = null; lastSentTitle = null;
-      }
+      // No automatic re-send: the service worker already retries transient API
+      // failures internally, and a second full round would blow past the
+      // question's time window (and pile onto a rate limit). Alt+K re-triggers.
+      lastSentHash = null; lastSentTitle = null;
       break;
 
     case 'manualAnswer':
@@ -236,8 +226,6 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
         sendResponse({ success: false, message: 'No active question' });
         break;
       }
-      pendingRetryHash = null;
-      hasRetried = false;
       lastSentHash = null;
       updateStatus('Manual retry...', currentQuestion.title);
       sendQuestionToBackend(currentQuestion);
@@ -253,8 +241,6 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
       break;
 
     case 'placePin': {
-      hasRetried = false;
-      pendingRetryHash = null;
       if (currentQuestion) lastSentHash = questionHash(currentQuestion);
       currentAnswer = `📍 ${request.coords.x.toFixed(1)}%, ${request.coords.y.toFixed(1)}%`;
       updateStatus(`Pin answer ✅${request.elapsed ? ` (${request.elapsed})` : ''}`, currentAnswer);
@@ -265,8 +251,6 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     }
 
     case 'reorderJumble': {
-      hasRetried = false;
-      pendingRetryHash = null;
       if (currentQuestion) lastSentHash = questionHash(currentQuestion);
       currentAnswer = `🧩 ${request.answerWord}`;
       updateStatus(`Jumble answer ✅${request.elapsed ? ` (${request.elapsed})` : ''}`, currentAnswer);
@@ -277,8 +261,6 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     }
 
     case 'setSlider': {
-      hasRetried = false;
-      pendingRetryHash = null;
       if (currentQuestion) lastSentHash = questionHash(currentQuestion);
       currentAnswer = `🎚️ ${request.value}`;
       updateStatus(`Slider answer ✅${request.elapsed ? ` (${request.elapsed})` : ''}`, currentAnswer);
@@ -289,8 +271,6 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     }
 
     case 'typeOpenEnded': {
-      hasRetried = false;
-      pendingRetryHash = null;
       if (currentQuestion) lastSentHash = questionHash(currentQuestion);
       currentAnswer = `✏️ ${request.answer}`;
       updateStatus(`Open-ended answer ✅${request.elapsed ? ` (${request.elapsed})` : ''}`, currentAnswer);
@@ -308,8 +288,6 @@ window.addEventListener('kahootGameReset', () => {
   currentQuestion = null;
   currentAnswer = null;
   lastSentHash = null; lastSentTitle = null;
-  pendingRetryHash = null;
-  hasRetried = false;
   submitNonce++;
   cleanupOverlays();
   removeStatusIndicator();
@@ -433,11 +411,19 @@ window.addEventListener('kahootQuestionParsed', async (event) => {
     return;
   }
 
+  // Rate-limit backend calls: any page script can dispatch a kahootQuestionParsed
+  // event, so throttle how often we spend the user's OpenAI key. Real questions
+  // never arrive this fast; this caps a forged-event credit-burn to a trickle.
+  if (Date.now() - lastBackendSendAt < MIN_SEND_INTERVAL_MS) {
+    log('Throttled: question arrived too soon after the previous one — ignoring');
+    lastSentTitle = null;
+    return;
+  }
+  lastBackendSendAt = Date.now();
+
   currentQuestion = { title: q.title, choices: q.choices || [], type: q.type, imageUrl: q.imageUrl, ...(q.sliderConfig ? { sliderConfig: q.sliderConfig } : {}) };
   submitNonce++;
   currentAnswer = null;
-  hasRetried = false;
-  pendingRetryHash = null;
 
   sendQuestionToBackend(q);
   // Release the in-flight title lock now that this question is dispatched, so a

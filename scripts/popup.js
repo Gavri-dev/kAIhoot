@@ -84,10 +84,37 @@ chrome.runtime.onMessage.addListener((request) => {
 
 // --- Status ---
 
-function updateApiStatus(hasKey) {
+function setApiStatus(state) {
   if (!apiStatus) return;
-  apiStatus.textContent = hasKey ? 'Connected' : 'No key';
-  apiStatus.className = `api-pill ${hasKey ? 'ok' : 'missing'}`;
+  const map = {
+    connected: ['Connected', 'ok'],
+    invalid:   ['Invalid key', 'missing'],
+    checking:  ['Checking…', ''],
+    set:       ['Key set', ''],
+    none:      ['No key', 'missing']
+  };
+  const [text, cls] = map[state] || map.none;
+  apiStatus.textContent = text;
+  apiStatus.className = `api-pill ${cls}`.trim();
+}
+
+// Lightweight check so the pill reflects whether the key actually works, rather
+// than showing "Connected" for any non-empty string.
+async function validateApiKey(key) {
+  try {
+    const resp = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${key}` } });
+    if (resp.ok) return 'connected';
+    if (resp.status === 401 || resp.status === 403) return 'invalid';
+    return 'set'; // other error (e.g. rate limit) — key is plausibly fine, just unconfirmed
+  } catch {
+    return 'set'; // network error — can't verify; don't claim Connected or Invalid
+  }
+}
+
+async function refreshApiStatus(key) {
+  if (!key) { setApiStatus('none'); return; }
+  setApiStatus('checking');
+  setApiStatus(await validateApiKey(key));
 }
 
 function updateDelayLabel(value) {
@@ -124,7 +151,7 @@ async function loadSettings() {
   if (DEPRECATED_MODELS.has(visionModel.toLowerCase())) visionModel = DEFAULT_VISION_MODEL;
   setSelectValue(visionSelect, visionModel, DEFAULT_VISION_MODEL);
 
-  updateApiStatus(!!migratedKey);
+  refreshApiStatus(migratedKey);
   return !!migratedKey;
 }
 
@@ -162,15 +189,21 @@ function wireSettings() {
     await chrome.storage.local.set({ openaiApiKey: key });
     await chrome.storage.sync.set({ openaiModel: model, openaiVisionModel: visionModel });
     await chrome.storage.sync.remove(['openaiApiKey']);
-    updateApiStatus(!!key);
-    // Flash the save button as confirmation
+    refreshApiStatus(key);
+    // Flash "Saved!", THEN collapse — otherwise the panel hides the confirmation
+    // in the same tick it is shown.
     if (saveBtn) {
       const orig = saveBtn.textContent;
       saveBtn.textContent = 'Saved!';
       saveBtn.classList.add('saved');
-      setTimeout(() => { saveBtn.textContent = orig; saveBtn.classList.remove('saved'); }, 1200);
+      setTimeout(() => {
+        saveBtn.textContent = orig;
+        saveBtn.classList.remove('saved');
+        if (key) { openaiSection?.classList.add('hidden'); collapseArrow.textContent = '▸'; }
+      }, 1200);
+    } else if (key) {
+      openaiSection?.classList.add('hidden'); collapseArrow.textContent = '▸';
     }
-    if (key) { openaiSection?.classList.add('hidden'); collapseArrow.textContent = '▸'; }
   });
 
   clearBtn?.addEventListener('click', async () => {
@@ -179,7 +212,7 @@ function wireSettings() {
     if (apiKeyInput) apiKeyInput.value = '';
     setSelectValue(modelSelect, DEFAULT_MODEL, DEFAULT_MODEL);
     setSelectValue(visionSelect, DEFAULT_VISION_MODEL, DEFAULT_VISION_MODEL);
-    updateApiStatus(false);
+    setApiStatus('none');
   });
 }
 
