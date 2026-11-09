@@ -69,6 +69,9 @@
     };
 
     ws.addEventListener('close', () => {
+      // A stale/overlapping socket closing must not disturb the current one
+      // (a reconnect may have already installed a newer socket).
+      if (window.__kahootWS !== ws) return;
       log('WS closed');
       window.__kahootWS = null;
       window.kahootClientId = null;

@@ -32,6 +32,7 @@ let hasRetried = false;
 let statusEl = null;
 let activeToasts = [];
 let submitNonce = 0;
+let activeTimerHandle = null;
 
 let cachedSettings = {
   highlightOption: true,
@@ -311,6 +312,7 @@ window.addEventListener('kahootGameReset', () => {
   submitNonce++;
   cleanupOverlays();
   removeStatusIndicator();
+  removeTimerOverlay();
 });
 
 window.addEventListener('kahootNonScoredQuestion', (event) => {
@@ -358,6 +360,9 @@ window.addEventListener('kahootQuestionParsed', async (event) => {
     return;
   }
   lastSentTitle = q.title;
+  // Snapshot the game-state token so we can bail if a reset or a newer question
+  // supersedes us during the async DOM polling below.
+  const myNonce = submitNonce;
 
   loadingEndsAt = 0;
   for (let i = 0; i < 10; i++) {
@@ -417,6 +422,12 @@ window.addEventListener('kahootQuestionParsed', async (event) => {
   const postPollHash = questionHash({ title: q.title, choices: q.choices || [] });
   if (lastSentHash === postPollHash) {
     log('Dedup: post-poll duplicate, skipping');
+    lastSentTitle = null;
+    return;
+  }
+
+  if (submitNonce !== myNonce) {
+    log('Game state changed during resolve — dropping stale question');
     lastSentTitle = null;
     return;
   }
@@ -737,7 +748,12 @@ function clickSubmitButton(context = 'generic', attempt = 0, nonce = submitNonce
   }
 }
 
-function removeTimerOverlay() { document.getElementById('kaihoot-timer')?.remove(); }
+function removeTimerOverlay() {
+  // Cancel the pending countdown too, or a previous question's delayed answer
+  // can fire against the current question's buttons.
+  if (activeTimerHandle) { clearTimeout(activeTimerHandle); activeTimerHandle = null; }
+  document.getElementById('kaihoot-timer')?.remove();
+}
 
 // Optional countdown overlay for delayed answers.
 function showTimerOverlay(duration, callback) {
@@ -783,9 +799,10 @@ function showTimerOverlay(duration, callback) {
   requestAnimationFrame(() => { fill.style.width = '0%'; });
 
   let fired = false;
-  const fire = () => { if (fired) return; fired = true; slideOutAndRemove(overlay, callback); };
+  const fire = () => { if (fired) return; fired = true; activeTimerHandle = null; slideOutAndRemove(overlay, callback); };
 
   const timer = setTimeout(fire, duration * 1000);
+  activeTimerHandle = timer;
   cancelBtn.addEventListener('click', () => { clearTimeout(timer); fire(); });
   fill.addEventListener('transitionend', () => { if (!fired) { clearTimeout(timer); fire(); } }, { once: true });
 }
