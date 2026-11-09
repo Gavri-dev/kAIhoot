@@ -77,6 +77,7 @@ chrome.storage.onChanged.addListener((changes, ns) => {
   if (changes.silentMode?.newValue) {
     removeStatusIndicator();
     removeTimerOverlay();
+    cleanupOverlays();
   }
 });
 
@@ -453,7 +454,16 @@ function cleanupOverlays() {
     el.style.boxShadow = '';
     el.style.borderRadius = '';
     el.style.transition = '';
+    el.style.position = '';
   }
+  // Slider markers aren't answer elements, so clear the green ring we drew on them.
+  document.querySelectorAll('.kaihoot-slider-marked').forEach(el => {
+    el.style.border = '';
+    el.style.boxShadow = '';
+    el.style.borderRadius = '';
+    el.style.transition = '';
+    el.classList.remove('kaihoot-slider-marked');
+  });
 }
 
 // Image answers usually show up later than text answers, so poll a bit before giving up.
@@ -952,9 +962,9 @@ function showPinCrosshair(svgEl, coords) {
   crosshair.append(ring, dot, hLine, vLine, labelEl);
   (document.body || document.documentElement).appendChild(crosshair);
 
-  let rafId;
-  function updatePosition() {
-    if (!crosshair.isConnected) return;
+  // Reposition on a throttled timer instead of every animation frame — the
+  // crosshair only needs to track scroll/resize, not run at 60fps for a minute.
+  const reposition = () => {
     const newCtm = svgEl.getScreenCTM();
     if (newCtm) {
       const pt2 = svgEl.createSVGPoint();
@@ -963,17 +973,19 @@ function showPinCrosshair(svgEl, coords) {
       crosshair.style.left = sp2.x + 'px';
       crosshair.style.top = sp2.y + 'px';
     }
-    rafId = requestAnimationFrame(updatePosition);
-  }
-  rafId = requestAnimationFrame(updatePosition);
+  };
+  let posTimer = setInterval(() => {
+    if (!crosshair.isConnected) { clearInterval(posTimer); return; }
+    reposition();
+  }, 200);
 
   const observer = new MutationObserver(() => {
     if (!crosshair.isConnected || !svgEl.isConnected || !document.querySelector('[data-functional-selector="pin-input-svg"]')) {
-      crosshair.remove(); cancelAnimationFrame(rafId); observer.disconnect();
+      crosshair.remove(); clearInterval(posTimer); observer.disconnect();
     }
   });
   observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
-  setTimeout(() => { if (crosshair.isConnected) { crosshair.remove(); cancelAnimationFrame(rafId); observer.disconnect(); } }, 60000);
+  setTimeout(() => { if (crosshair.isConnected) { crosshair.remove(); clearInterval(posTimer); observer.disconnect(); } }, 60000);
 }
 
 // Jumble is handled in the page context when possible, with a DOM fallback here if needed.
@@ -1183,6 +1195,7 @@ function highlightSliderMarker(targetValue) {
       dot.style.boxShadow = '0 0 12px #00ff00';
       dot.style.borderRadius = '50%';
       dot.style.transition = 'all 0.3s ease';
+      dot.classList.add('kaihoot-slider-marked');
     }
   }
 }
