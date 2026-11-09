@@ -83,6 +83,18 @@ test('parseMultiSelectResponse throws on unparseable response', () => {
   assert.throws(() => parseMultiSelectResponse('I think A and C', ['A', 'B', 'C']));
 });
 
+test('parseMultiSelectResponse drops explicitly rejected options in prose', () => {
+  assert.deepEqual(parseMultiSelectResponse('1 and 2 are plausible but 2 is wrong, so 1', ['A', 'B', 'C']), ['A']);
+});
+
+test('parseMultiSelectResponse ignores meta-counts like "4 options"', () => {
+  assert.deepEqual(parseMultiSelectResponse('There are 4 options; the answer is 2', ['A', 'B', 'C', 'D']), ['B']);
+});
+
+test('parseMultiSelectResponse handles "not N" negation', () => {
+  assert.deepEqual(parseMultiSelectResponse('Pick 1 and 3, not 2', ['A', 'B', 'C']), ['A', 'C']);
+});
+
 test('parsePinCoordinates parses final-line coordinates', () => {
   assert.deepEqual(parsePinCoordinates('reasoning\n50.5,40'), { x: 50.5, y: 40 });
 });

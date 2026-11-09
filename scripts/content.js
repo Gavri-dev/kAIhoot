@@ -386,6 +386,7 @@ window.addEventListener('kahootQuestionParsed', async (event) => {
       log('Jumble tiles from DOM:', domTiles);
     } else if (!q.choices?.length) {
       warn('No jumble tiles found');
+      lastSentTitle = null;
       return;
     }
   }
@@ -416,6 +417,7 @@ window.addEventListener('kahootQuestionParsed', async (event) => {
   const postPollHash = questionHash({ title: q.title, choices: q.choices || [] });
   if (lastSentHash === postPollHash) {
     log('Dedup: post-poll duplicate, skipping');
+    lastSentTitle = null;
     return;
   }
 
@@ -426,6 +428,10 @@ window.addEventListener('kahootQuestionParsed', async (event) => {
   pendingRetryHash = null;
 
   sendQuestionToBackend(q);
+  // Release the in-flight title lock now that this question is dispatched, so a
+  // LATER question that happens to reuse this exact title isn't silently skipped
+  // (the lastSentHash guard above still dedups genuine repeats).
+  lastSentTitle = null;
 });
 
 // Clear anything we drew for the previous question before the next one starts.

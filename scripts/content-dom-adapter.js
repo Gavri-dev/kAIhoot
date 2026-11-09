@@ -59,21 +59,25 @@
     }
 
     const clone = element.cloneNode(true);
-    clone.querySelectorAll('.kaihoot-checkmark').forEach(checkmark => checkmark.remove());
-    let text = clone.textContent.toLowerCase().trim().replace(/icon/gi, '').replace(/\s+/g, ' ').trim();
+    // Drop our own checkmark and Kahoot's icon-font nodes so their text doesn't
+    // leak into the label. (A blanket /icon/gi strip used to corrupt real
+    // answers like "Silicon" -> "sil".)
+    clone.querySelectorAll('.kaihoot-checkmark, [data-functional-selector="icon"], svg').forEach(node => node.remove());
+    let text = clone.textContent.toLowerCase().trim().replace(/\s+/g, ' ').trim();
 
-    // Kahoot sometimes duplicates the same label multiple times inside a button.
+    // Kahoot sometimes renders the SAME label in 2-3 sibling nodes, so textContent
+    // comes out doubled/tripled. Collapse that ONLY when the repeated unit really
+    // appears as repeated DOM nodes — never a single word that is genuinely a
+    // reduplication (couscous, bonbon, tutu, 2525...).
     for (const divisor of [3, 2]) {
-      if (text.length >= divisor * 2) {
-        const chunk = text.length / divisor;
-        if (Number.isInteger(chunk)) {
-          const part = text.substring(0, chunk);
-          if (part.repeat(divisor) === text) {
-            text = part;
-            break;
-          }
-        }
-      }
+      if (text.length < divisor * 2) continue;
+      const chunk = text.length / divisor;
+      if (!Number.isInteger(chunk)) continue;
+      const part = text.substring(0, chunk);
+      if (part.repeat(divisor) !== text) continue;
+      const repeatedNodes = [...clone.querySelectorAll('*')]
+        .filter(node => node.textContent.toLowerCase().replace(/\s+/g, ' ').trim() === part).length;
+      if (repeatedNodes >= divisor) { text = part; break; }
     }
 
     return text;

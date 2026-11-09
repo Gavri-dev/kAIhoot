@@ -97,11 +97,26 @@ export function parseMultiSelectResponse(raw, choices) {
     return unique.map(number => choices[number - 1]);
   }
 
-  // Fallback: extract any valid option numbers from the text. Matches v3.4.0.
-  const nums = [...text.matchAll(/\b\d+\b/g)].map(match => parseInt(match[0], 10));
-  const validNums = [...new Set(nums.filter(number => number >= 1 && number <= choices.length))].sort((a, b) => a - b);
-  if (validNums.length > 0) {
-    return validNums.map(number => choices[number - 1]);
+  // Fallback: the model didn't use the strict YES/NO format. Scrape option
+  // numbers from prose, but (a) ignore meta-counts like "4 options" and (b) drop
+  // numbers the model explicitly rejected ("2 is wrong", "not 3"), so we never
+  // submit an option the model ruled out.
+  const prose = text.replace(/\b\d+\s+(?:options?|choices?|answers?|questions?)\b/gi, ' ');
+  const scraped = [...new Set(
+    [...prose.matchAll(/\b\d+\b/g)]
+      .map(match => parseInt(match[0], 10))
+      .filter(number => number >= 1 && number <= choices.length)
+  )];
+
+  const kept = scraped.filter(number => {
+    const isWrong = new RegExp(`\\b${number}\\b\\s*(?:is|are|was|were|:|=)?\\s*(?:wrong|incorrect|false|not\\s+correct|not\\s+right)\\b`, 'i');
+    const notN = new RegExp(`\\b(?:not|exclude|excluding|rule\\s+out|skip|omit)\\s+(?:option\\s+|choice\\s+|number\\s+)?${number}\\b`, 'i');
+    return !isWrong.test(prose) && !notN.test(prose);
+  });
+
+  const finalNums = (kept.length ? kept : scraped).sort((a, b) => a - b);
+  if (finalNums.length > 0) {
+    return finalNums.map(number => choices[number - 1]);
   }
 
   throw new Error(`Could not parse multi-select answer: "${raw}"`);
