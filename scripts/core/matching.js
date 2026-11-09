@@ -136,11 +136,11 @@ export function parsePinCoordinates(raw) {
     }
   }
 
+  // Coordinates at the very END of the final line (after a label or reasoning),
+  // allowing only trailing punctuation — never a pair buried in prose like
+  // "Confidence 90, 80 percent sure".
   if (!match) {
-    for (let i = lines.length - 1; i >= Math.max(0, lines.length - 3); i -= 1) {
-      match = lines[i].match(/(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/);
-      if (match) break;
-    }
+    match = finalLine.match(/(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)[.)\]\s]*$/);
   }
 
   if (!match) {
@@ -179,17 +179,22 @@ export function snapSliderValue(value, sliderConfig = {}) {
 // Greedy first, brute force only for the small leftovers.
 export function computeTileOrder(answer, tiles) {
   const answerLower = String(answer || '').toLowerCase().replace(/[\s\-]/g, '');
-  const tilesLower = (tiles || []).map(tile => String(tile || '').toLowerCase().replace(/[\s\-]/g, ''));
+  // Keep each real tile's original index but drop empty/blank tiles — a stray
+  // blank element must never be placed into the order (it would get clicked and
+  // mis-submit the jumble).
+  const real = (tiles || [])
+    .map((tile, idx) => ({ idx, text: String(tile || '').toLowerCase().replace(/[\s\-]/g, '') }))
+    .filter(entry => entry.text.length > 0);
+
   const used = new Set();
   const order = [];
   let pos = 0;
 
-  while (pos < answerLower.length && order.length < tilesLower.length) {
+  while (pos < answerLower.length && order.length < real.length) {
     let found = false;
-    const candidates = tilesLower
-      .map((text, idx) => ({ text, idx, len: text.length }))
-      .filter(candidate => !used.has(candidate.idx))
-      .sort((a, b) => b.len - a.len);
+    const candidates = real
+      .filter(entry => !used.has(entry.idx))
+      .sort((a, b) => b.text.length - a.text.length);
 
     for (const candidate of candidates) {
       if (answerLower.startsWith(candidate.text, pos)) {
@@ -203,21 +208,22 @@ export function computeTileOrder(answer, tiles) {
     if (!found) break;
   }
 
-  if (order.length === tilesLower.length && pos === answerLower.length) return order;
-  if (tilesLower.length > 8) return null;
+  if (order.length === real.length && pos === answerLower.length) return order;
+  if (real.length > 8) return null;
 
+  const textOf = new Map(real.map(entry => [entry.idx, entry.text]));
   function permute(remaining, current) {
     if (remaining.length === 0) {
-      return current.map(index => tilesLower[index]).join('') === answerLower ? current : null;
+      return current.map(idx => textOf.get(idx)).join('') === answerLower ? current : null;
     }
     for (let i = 0; i < remaining.length; i += 1) {
       const next = [...current, remaining[i]];
-      if (!answerLower.startsWith(next.map(index => tilesLower[index]).join(''))) continue;
+      if (!answerLower.startsWith(next.map(idx => textOf.get(idx)).join(''))) continue;
       const result = permute([...remaining.slice(0, i), ...remaining.slice(i + 1)], next);
       if (result) return result;
     }
     return null;
   }
 
-  return permute(tilesLower.map((_, idx) => idx), []);
+  return permute(real.map(entry => entry.idx), []);
 }

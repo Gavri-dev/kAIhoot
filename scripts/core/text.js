@@ -1,10 +1,18 @@
 // Shared text helpers. Keep in sync with the copy in content-matching.js.
 
+// Latin letters with no canonical NFKD decomposition, so stripping combining
+// marks won't ASCII-fold them. Map them explicitly (e.g. "Łódź" -> "lodz").
+const LATIN_FOLD = {
+  'ł': 'l', 'ø': 'o', 'đ': 'd', 'ð': 'd', 'ß': 'ss', 'ı': 'i',
+  'æ': 'ae', 'œ': 'oe', 'þ': 'th', 'ħ': 'h', 'ŋ': 'n', 'ŧ': 't', 'ĸ': 'k'
+};
+
 export function normalizeText(value) {
   let text = String(value || '')
     .normalize('NFKD')
     .toLowerCase()
     .replace(/\p{M}+/gu, '')
+    .replace(/[\u0142\u00f8\u0111\u00f0\u00df\u0131\u00e6\u0153\u00fe\u0127\u014b\u0167\u0138]/g, ch => LATIN_FOLD[ch] || ch)
     .replace(/["\u201c\u201d'`]/g, '')
     .replace(/&/g, ' and ')
     .trim();

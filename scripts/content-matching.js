@@ -1,11 +1,18 @@
 // IIFE copy of the matching logic from core/matching.js + core/text.js.
 // Content scripts can't use ES modules, so we expose everything on globalThis.
 (function initMatchingScope(global) {
+  // Latin letters with no canonical NFKD decomposition (keep in sync with core/text.js).
+  const LATIN_FOLD = {
+    'ł': 'l', 'ø': 'o', 'đ': 'd', 'ð': 'd', 'ß': 'ss', 'ı': 'i',
+    'æ': 'ae', 'œ': 'oe', 'þ': 'th', 'ħ': 'h', 'ŋ': 'n', 'ŧ': 't', 'ĸ': 'k'
+  };
+
   function normalizeText(value) {
     let text = String(value || '')
       .normalize('NFKD')
       .toLowerCase()
       .replace(/\p{M}+/gu, '')
+      .replace(/[\u0142\u00f8\u0111\u00f0\u00df\u0131\u00e6\u0153\u00fe\u0127\u014b\u0167\u0138]/g, ch => LATIN_FOLD[ch] || ch)
       .replace(/["\u201c\u201d'`]/g, '')
       .replace(/&/g, ' and ')
       .trim();
@@ -92,16 +99,19 @@
 
   function computeTileOrder(answer, tiles) {
     const answerLower = String(answer || '').toLowerCase().replace(/[\s\-]/g, '');
-    const tilesLower = (tiles || []).map(tile => String(tile || '').toLowerCase().replace(/[\s\-]/g, ''));
+    // Keep each real tile's original index but drop empty/blank tiles so a stray
+    // blank element is never placed into the order and clicked.
+    const real = (tiles || [])
+      .map((tile, idx) => ({ idx, text: String(tile || '').toLowerCase().replace(/[\s\-]/g, '') }))
+      .filter(entry => entry.text.length > 0);
+
     const used = new Set();
     const order = [];
     let pos = 0;
 
-    while (pos < answerLower.length && order.length < tilesLower.length) {
+    while (pos < answerLower.length && order.length < real.length) {
       let found = false;
-      const candidates = tilesLower.map((text, idx) => ({ text, idx, len: text.length }))
-        .filter(candidate => !used.has(candidate.idx))
-        .sort((a, b) => b.len - a.len);
+      const candidates = real.filter(entry => !used.has(entry.idx)).sort((a, b) => b.text.length - a.text.length);
 
       for (const candidate of candidates) {
         if (answerLower.startsWith(candidate.text, pos)) {
@@ -115,21 +125,22 @@
       if (!found) break;
     }
 
-    if (order.length === tilesLower.length && pos === answerLower.length) return order;
-    if (tilesLower.length > 8) return null;
+    if (order.length === real.length && pos === answerLower.length) return order;
+    if (real.length > 8) return null;
 
+    const textOf = new Map(real.map(entry => [entry.idx, entry.text]));
     function permute(remaining, current) {
-      if (remaining.length === 0) return current.map(index => tilesLower[index]).join('') === answerLower ? current : null;
+      if (remaining.length === 0) return current.map(idx => textOf.get(idx)).join('') === answerLower ? current : null;
       for (let i = 0; i < remaining.length; i += 1) {
         const next = [...current, remaining[i]];
-        if (!answerLower.startsWith(next.map(index => tilesLower[index]).join(''))) continue;
+        if (!answerLower.startsWith(next.map(idx => textOf.get(idx)).join(''))) continue;
         const result = permute([...remaining.slice(0, i), ...remaining.slice(i + 1)], next);
         if (result) return result;
       }
       return null;
     }
 
-    return permute(tilesLower.map((_, idx) => idx), []);
+    return permute(real.map(entry => entry.idx), []);
   }
 
   global.kAIhootMatching = {

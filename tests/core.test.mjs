@@ -23,6 +23,12 @@ test('normalizeText handles special characters', () => {
   assert.equal(normalizeText('café'), 'cafe');
 });
 
+test('normalizeText folds non-decomposing Latin letters', () => {
+  assert.equal(normalizeText('Łódź'), 'lodz');
+  assert.equal(normalizeText('Straße'), 'strasse');
+  assert.equal(normalizeText('Ørsted'), 'orsted');
+});
+
 test('fuzzyScore returns 1 for identical strings', () => {
   assert.equal(fuzzyScore('hello', 'hello'), 1);
 });
@@ -119,6 +125,14 @@ test('parsePinCoordinates finds coordinates in last few lines', () => {
   assert.deepEqual(parsePinCoordinates('step 1\nstep 2\n75.3,22.1\nDone.'), { x: 75.3, y: 22.1 });
 });
 
+test('parsePinCoordinates ignores prose numbers that are not a coordinate', () => {
+  assert.throws(() => parsePinCoordinates('The pin is near the top.\nConfidence 90, 80 percent sure'), /Could not parse/);
+});
+
+test('parsePinCoordinates reads coordinates at the end of the final line', () => {
+  assert.deepEqual(parsePinCoordinates('Reasoning...\nFinal answer: 65.0,40.0'), { x: 65, y: 40 });
+});
+
 test('snapSliderValue honors min-offset snapping', () => {
   assert.equal(snapSliderValue(14, { min: 10, max: 20, step: 3 }), 13);
   assert.equal(snapSliderValue(20, { min: 10, max: 20, step: 3 }), 19);
@@ -148,6 +162,11 @@ test('computeTileOrder handles permutation case', () => {
 
 test('computeTileOrder returns null when no valid order exists', () => {
   assert.equal(computeTileOrder('xyz', ['a', 'b', 'c']), null);
+});
+
+test('computeTileOrder excludes empty/blank tiles from the order', () => {
+  assert.deepEqual(computeTileOrder('newyork', ['new', 'york', '']), [0, 1]);
+  assert.deepEqual(computeTileOrder('newyork', ['new', '', 'york']), [0, 2]);
 });
 
 // Model capability gate (replaces the old /^gpt-5/ string check). Reasoning

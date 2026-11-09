@@ -561,15 +561,18 @@
 
   // Same tile-order logic as the shared helper, duplicated here because the page context is not a module.
   function computeTileOrder(answer, tiles) {
-    const answerLower = answer.toLowerCase().replace(/[\s\-]/g, '');
-    const tilesLower = tiles.map(t => t.toLowerCase().replace(/[\s\-]/g, ''));
+    const answerLower = String(answer || '').toLowerCase().replace(/[\s\-]/g, '');
+    // Drop empty/blank tiles but keep each real tile's original index, so a stray
+    // blank element is never placed into the order and clicked.
+    const real = (tiles || [])
+      .map((t, i) => ({ idx: i, text: String(t || '').toLowerCase().replace(/[\s\-]/g, '') }))
+      .filter(e => e.text.length > 0);
     const used = new Set(), order = [];
     let pos = 0;
 
-    while (pos < answerLower.length && order.length < tiles.length) {
+    while (pos < answerLower.length && order.length < real.length) {
       let found = false;
-      const candidates = tilesLower.map((t, i) => ({ text: t, idx: i, len: t.length }))
-        .filter(c => !used.has(c.idx)).sort((a, b) => b.len - a.len);
+      const candidates = real.filter(e => !used.has(e.idx)).sort((a, b) => b.text.length - a.text.length);
       for (const c of candidates) {
         if (answerLower.startsWith(c.text, pos)) {
           order.push(c.idx); used.add(c.idx); pos += c.text.length; found = true; break;
@@ -577,20 +580,21 @@
       }
       if (!found) break;
     }
-    if (order.length === tiles.length && pos === answerLower.length) return order;
+    if (order.length === real.length && pos === answerLower.length) return order;
 
-    if (tiles.length > 8) return null;
+    if (real.length > 8) return null;
+    const textOf = new Map(real.map(e => [e.idx, e.text]));
     function permute(remaining, current) {
-      if (remaining.length === 0) return current.map(i => tilesLower[i]).join('') === answerLower ? current : null;
+      if (remaining.length === 0) return current.map(i => textOf.get(i)).join('') === answerLower ? current : null;
       for (let j = 0; j < remaining.length; j++) {
         const next = [...current, remaining[j]];
-        if (!answerLower.startsWith(next.map(i => tilesLower[i]).join(''))) continue;
+        if (!answerLower.startsWith(next.map(i => textOf.get(i)).join(''))) continue;
         const result = permute([...remaining.slice(0, j), ...remaining.slice(j + 1)], next);
         if (result) return result;
       }
       return null;
     }
-    return permute(tilesLower.map((_, i) => i), []);
+    return permute(real.map(e => e.idx), []);
   }
 
   // Type open-ended answers character by character so controlled inputs do not drop updates.
