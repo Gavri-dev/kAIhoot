@@ -118,7 +118,18 @@ async function refreshApiStatus(key) {
 }
 
 function updateDelayLabel(value) {
-  if (delayValue) delayValue.textContent = value > 0 ? `${value}s` : 'Off';
+  const text = value > 0 ? `${value}s` : 'Off';
+  if (delayValue) delayValue.textContent = text;
+  // Keep the screen-reader value in step; "0" alone would read meaninglessly.
+  if (delaySlider) delaySlider.setAttribute('aria-valuetext', value > 0 ? `${value} seconds` : 'Off');
+}
+
+// Single source of truth for the API panel's open/closed state so the arrow
+// glyph and aria-expanded never drift apart.
+function setOpenAICollapsed(collapsed) {
+  openaiSection?.classList.toggle('hidden', collapsed);
+  if (collapseArrow) collapseArrow.textContent = collapsed ? '▸' : '▾';
+  toggleOpenAI?.setAttribute('aria-expanded', String(!collapsed));
 }
 
 // --- Settings ---
@@ -178,8 +189,7 @@ function wireSettings() {
   });
 
   toggleOpenAI?.addEventListener('click', () => {
-    const isHidden = openaiSection.classList.toggle('hidden');
-    collapseArrow.textContent = isHidden ? '▸' : '▾';
+    setOpenAICollapsed(!openaiSection.classList.contains('hidden'));
   });
 
   saveBtn?.addEventListener('click', async () => {
@@ -199,10 +209,10 @@ function wireSettings() {
       setTimeout(() => {
         saveBtn.textContent = orig;
         saveBtn.classList.remove('saved');
-        if (key) { openaiSection?.classList.add('hidden'); collapseArrow.textContent = '▸'; }
+        if (key) setOpenAICollapsed(true);
       }, 1200);
     } else if (key) {
-      openaiSection?.classList.add('hidden'); collapseArrow.textContent = '▸';
+      setOpenAICollapsed(true);
     }
   });
 
@@ -223,8 +233,5 @@ function wireSettings() {
   const hasKey = await loadSettings();
   wireSettings();
   pollCurrentQuestion();
-  if (!hasKey) {
-    openaiSection?.classList.remove('hidden');
-    if (collapseArrow) collapseArrow.textContent = '▾';
-  }
+  if (!hasKey) setOpenAICollapsed(false);
 })();

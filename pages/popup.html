@@ -33,25 +33,25 @@
     <!-- Settings -->
     <div class="section">
       <div class="section-title">Settings</div>
-      <div class="toggle-row"><span>Highlight answers</span><label class="toggle"><input type="checkbox" id="highlight" checked><span class="toggle-track"></span></label></div>
-      <div class="toggle-row"><span>Auto-click</span><label class="toggle"><input type="checkbox" id="autoclick" checked><span class="toggle-track"></span></label></div>
-      <div class="toggle-row"><span>Pin: show crosshair</span><label class="toggle"><input type="checkbox" id="pinHighlight" checked><span class="toggle-track"></span></label></div>
-      <div class="toggle-row"><span>Pin: auto-place</span><label class="toggle"><input type="checkbox" id="pinAutoclick"><span class="toggle-track"></span></label></div>
+      <div class="toggle-row"><span>Highlight answers</span><label class="toggle"><input type="checkbox" id="highlight" aria-label="Highlight answers" checked><span class="toggle-track"></span></label></div>
+      <div class="toggle-row"><span>Auto-click</span><label class="toggle"><input type="checkbox" id="autoclick" aria-label="Auto-click" checked><span class="toggle-track"></span></label></div>
+      <div class="toggle-row"><span>Pin: show crosshair</span><label class="toggle"><input type="checkbox" id="pinHighlight" aria-label="Pin: show crosshair" checked><span class="toggle-track"></span></label></div>
+      <div class="toggle-row"><span>Pin: auto-place</span><label class="toggle"><input type="checkbox" id="pinAutoclick" aria-label="Pin: auto-place"><span class="toggle-track"></span></label></div>
       <div class="pin-note">Pin placement can be approximate, so suggest-only is recommended.</div>
-      <div class="toggle-row"><span>Silent mode</span><label class="toggle"><input type="checkbox" id="silent"><span class="toggle-track"></span></label></div>
+      <div class="toggle-row"><span>Silent mode</span><label class="toggle"><input type="checkbox" id="silent" aria-label="Silent mode"><span class="toggle-track"></span></label></div>
       <div class="slider-row">
         <div class="slider-header">
-          <span>Answer delay</span>
+          <span id="delayLabel">Answer delay</span>
           <span class="slider-val" id="delayValue">Off</span>
         </div>
-        <input type="range" id="answerDelay" class="slider" min="0" max="30" step="0.5" value="0">
+        <input type="range" id="answerDelay" class="slider" min="0" max="30" step="0.5" value="0" aria-labelledby="delayLabel" aria-valuetext="Off">
         <div class="slider-marks"><span>0s</span><span>15s</span><span>30s</span></div>
       </div>
     </div>
 
     <!-- OpenAI config -->
     <div class="section">
-      <button id="toggleOpenAI" class="collapse-toggle">
+      <button id="toggleOpenAI" class="collapse-toggle" aria-expanded="false" aria-controls="openaiSection">
         <span class="collapse-label">API Configuration</span>
         <span id="collapseArrow" class="collapse-arrow">▸</span>
       </button>
