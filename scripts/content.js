@@ -144,6 +144,7 @@ function showErrorToast(message) {
     font:600 13px/1.3 system-ui,sans-serif;
     max-width:300px; box-shadow:0 4px 12px rgba(0,0,0,.3);
     animation: kaihoot-fadein .25s ease-out;
+    pointer-events:none;
   `;
   toast.textContent = message;
   document.body?.appendChild(toast);
@@ -767,13 +768,14 @@ function showTimerOverlay(duration, callback) {
   const overlay = document.createElement('div');
   overlay.id = 'kaihoot-timer';
   overlay.style.cssText = `
-    position:fixed; top:20px; right:20px;
+    position:fixed; top:76px; right:20px;
     background:linear-gradient(135deg,rgba(5,150,105,.92),rgba(52,211,153,.92));
     color:#fff; padding:14px 18px; border-radius:12px;
     z-index:10001; font:600 14px/1.3 system-ui,sans-serif;
     box-shadow:0 6px 20px rgba(0,0,0,.35); min-width:180px;
     animation:kaihoot-slide-in .25s ease-out;
     backdrop-filter:blur(8px);
+    pointer-events:none;
   `;
 
   const label = document.createElement('div');
@@ -788,7 +790,7 @@ function showTimerOverlay(duration, callback) {
 
   const cancelBtn = document.createElement('button');
   cancelBtn.textContent = 'Skip wait';
-  cancelBtn.style.cssText = 'margin-top:8px; background:rgba(255,255,255,.2); border:none; color:#fff; padding:4px 12px; border-radius:4px; cursor:pointer; font-size:11px; font-weight:600;';
+  cancelBtn.style.cssText = 'margin-top:8px; background:rgba(255,255,255,.2); border:none; color:#fff; padding:4px 12px; border-radius:4px; cursor:pointer; font-size:11px; font-weight:600; pointer-events:auto;';
 
   overlay.append(label, track, cancelBtn);
   (document.body || document.documentElement).appendChild(overlay);
